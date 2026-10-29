@@ -2208,6 +2208,11 @@ class Main(star.Star):
         return parts
 
     async def _send_chat(self, event, text, img_url=None, img_data=None, sticker=None) -> bool:
+        try:
+            if event is not None and text:
+                text = self._fix_address(text, str(event.get_sender_id()))
+        except Exception:
+            pass
         if (
             text and not img_url and not img_data and not sticker
             and len(text) > 45 and random.random() < 0.6
@@ -3529,6 +3534,7 @@ class Main(star.Star):
                     self._record_music(song)
                     reply = await self._share_music(event, song, reply, text)
             reply = await self._verify_reply(text, reply, event.unified_msg_origin)
+            reply = self._fix_address(reply, uid)
             if reply or img_url or sticker:
                 if await self._send_chat(event, reply, img_url, img_data, sticker):
                     _sess = f"{event.unified_msg_origin}#{uid}"
@@ -3673,7 +3679,10 @@ class Main(star.Star):
         if str(uid) in [str(x) for x in self.cfg.get("owner_ids", [])]:
             return text
         title = (self._titles.get(str(uid)) or ("朋友", 0))[0]
-        return re.sub(r"(爸爸|老爸|爹爹|爹地|爹|daddy|Daddy|DADDY)", title, text)
+        fixed = re.sub(r"(爸爸|老爸|爹爹|爹地|爹|daddy|Daddy|DADDY|爸比)", title, text)
+        if fixed != text:
+            logger.info(f"[小鲸] 称呼纠错：{text[:30]} → {fixed[:30]}")
+        return fixed
 
     @filter.on_llm_request()
     async def inject_speaker(self, event: AstrMessageEvent, req):
