@@ -1,0 +1,5 @@
+aiohttp>=3.9
+Pillow>=10.0
+lunar_python>=1.4
+qrcode>=7.4
+pywin32>=306
