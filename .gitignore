@@ -13,6 +13,7 @@ data/preferences.json
 data/interest.jsonl
 data/usage.json
 data/report_state.json
+data/diary_digest.json
 data/report_songs.json
 data/report_tips.json
 data/watchdog_state.json

@@ -232,9 +232,31 @@ def load_age_days() -> int:
         return 0
 
 
+def _clip_diary(text: str, limit: int = 110) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    for p in ("。", "！", "？", "…"):
+        i = cut.rfind(p)
+        if i >= 40:
+            return cut[: i + 1]
+    return cut.rstrip("，、；： ") + "…"
+
+
 def load_diary() -> str:
-    """取最近一篇日记的最后一段，作为日报里的一句话。"""
-    d = Path(__file__).resolve().parent / "data" / "diary"
+    """取最近一条日报摘录；没有摘录时回退到最近一篇日记的最后一段。"""
+    base = Path(__file__).resolve().parent / "data"
+    try:
+        digests = json.loads((base / "diary_digest.json").read_text(encoding="utf-8"))
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        for day in sorted((k for k in digests if str(k) <= today), reverse=True):
+            val = str(digests.get(day) or "").strip()
+            if val:
+                return _clip_diary(val)
+    except Exception:
+        pass
+    d = base / "diary"
     try:
         files = sorted(d.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     except Exception:
@@ -251,7 +273,7 @@ def load_diary() -> str:
         body = re.sub(r"^\d{2}:\d{2}\s*", "", body)
         body = " ".join(line.strip() for line in body.splitlines() if line.strip())
         if body:
-            return body[:180]
+            return _clip_diary(body)
     return ""
 
 

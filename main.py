@@ -72,6 +72,7 @@ MOOD_PATH = DATA_DIR / "mood.json"
 RITUAL_PATH = DATA_DIR / "ritual_state.json"
 WEEKLY_DIR = DATA_DIR / "weekly"
 DIARY_DIR = DATA_DIR / "diary"
+DIARY_DIGEST_PATH = DATA_DIR / "diary_digest.json"
 SELF_PATH = DATA_DIR / "self.md"
 CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
@@ -481,7 +482,19 @@ class Main(star.Star):
             return True
         if "你的日记" in t:
             txt = self._read_diary()
-            self._reply(event, txt[-300:]) if txt else await self._reply_polished(event, "今天还没写日记。")
+            if not txt:
+                await self._reply_polished(event, "今天还没写日记。")
+                return True
+            head = "今天的日记：\n"
+            chunks = [txt[i:i + 1200] for i in range(0, len(txt), 1200)]
+            for i, chunk in enumerate(chunks):
+                await self._send(
+                    event,
+                    MessageChain(chain=[Plain(text=(head if i == 0 else "") + chunk)]),
+                    event.unified_msg_origin,
+                )
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(0.5)
             return True
         if "你改了什么" in t or "你自己改" in t:
             try:
@@ -3160,7 +3173,8 @@ class Main(star.Star):
         if not recents and not force:
             return False
         prompt = (
-            "写今天的小日记，3 到 5 句，第一人称。\n"
+            "写今天的小日记，第一人称，长度随心情：有想说的就多写几句，没想说的就短一点。\n"
+            "这次不用遵守聊天时的短句习惯，日记可以写长，也可以只写两三句。\n"
             "要求：写具体的事和当下心情，可以吐槽、可以撒娇；不要写成总结报告，不要编造没发生的事。\n"
             "今天群里的片段：\n" + ("\n".join(recents) if recents else "（今天很安静）")
         )
@@ -3172,6 +3186,12 @@ class Main(star.Star):
         with self._diary_path(day).open("a", encoding="utf-8") as f:
             f.write(f"\n## {stamp}\n{text}\n")
         self._last_diary = day
+        try:
+            digest = await self._make_diary_digest(text)
+            if digest:
+                self._save_diary_digest(day, digest)
+        except Exception as e:
+            logger.info(f"[小鲸] 日记摘录失败：{e}")
         logger.info(f"[小鲸] 写完 {day} 的日记（{len(text)} 字）")
         return True
 
@@ -3183,6 +3203,41 @@ class Main(star.Star):
             return p.read_text(encoding="utf-8").strip()
         except Exception:
             return ""
+
+    def _load_diary_digests(self) -> dict:
+        try:
+            return json.loads(DIARY_DIGEST_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save_diary_digest(self, day: str, digest: str) -> None:
+        try:
+            data = self._load_diary_digests()
+            data[day] = digest
+            if len(data) > 90:
+                for k in sorted(data)[:-90]:
+                    data.pop(k, None)
+            DIARY_DIGEST_PATH.write_text(
+                json.dumps(data, ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    async def _make_diary_digest(self, text: str) -> str:
+        """单独生成日报用的短摘录，不影响日记正文长度。"""
+        prompt = (
+            "下面是你今天的日记。请把它压成一句 40 到 80 字的日报摘录：\n"
+            "保留具体的事和情绪，不要写成总结报告，不要客套，不要分点。\n"
+            f"{text}"
+        )
+        digest = await self._llm(prompt)
+        digest, _a, _b = self._extract_markers(digest)
+        digest = re.sub(r"\s+", " ", digest).strip()
+        if digest:
+            return self._trim_reply(digest, 100)
+        first = re.split(r"[。！？\n]", text, maxsplit=1)[0].strip()
+        return (first[:80] + "…") if len(first) > 80 else first
 
     def _diary_hint(self) -> str:
         if random.random() > 0.35:
