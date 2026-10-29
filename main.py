@@ -629,10 +629,14 @@ class Main(star.Star):
                     best, best_len = cand, ln
             root = best or soup.body or soup
         text = root.get_text("\n", strip=True)
+        junk = {"个人中心", "无障碍", "登录", "注册", "首页", "返回顶部", "设为首页",
+                "加入收藏", "繁體", "English", "简/繁", "分享", "打印"}
         lines = []
         for line in text.splitlines():
             line = re.sub(r"[ \t\r\f\v]+", " ", line).strip()
-            if len(line) <= 2:
+            if len(line) <= 2 or line in junk:
+                continue
+            if re.fullmatch(r"https?://\S+", line):
                 continue
             if lines and line == lines[-1]:
                 continue
@@ -652,14 +656,14 @@ class Main(star.Star):
             f"正文：\n{page.get('text') or ''}"
         )
 
-    async def _read_page(self, url: str) -> dict:
+    async def _read_page(self, url: str, timeout: int = 20) -> dict:
         url = (url or "").strip()
         ttl = max(60, int(self.cfg.get("page_cache_seconds", 1800)))
         now = time.time()
         hit = self._page_cache.get(url)
         if hit:
             age = now - hit[0]
-            if age < (ttl if hit[1].get("ok") else 300):
+            if age < (ttl if hit[1].get("ok") else 60):
                 return dict(hit[1])
         if not url or not await self._url_allowed(url):
             out = {"ok": False, "url": url, "error": "只支持 http/https 公网地址"}
@@ -675,7 +679,7 @@ class Main(star.Star):
         charset = ""
         final = url
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
                 for _ in range(6):
                     if not await self._url_allowed(final):
                         out = {"ok": False, "url": final, "error": "重定向到了不允许的地址"}
@@ -781,7 +785,7 @@ class Main(star.Star):
             for r in results[: min(len(results), max(3, n + 1))]:
                 if got >= n:
                     break
-                page = await self._read_page(r.get("url", ""))
+                page = await self._read_page(r.get("url", ""), timeout=8)
                 if page.get("ok") and int(page.get("chars") or 0) >= 200:
                     lines.append("\n[网页正文]\n" + self._format_page(page))
                     got += 1
