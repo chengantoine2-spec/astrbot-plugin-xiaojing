@@ -110,5 +110,9 @@
     "sentiment": 120,
     "bubble": 160
   },
-  "owner_name": ""
+  "owner_name": "",
+  "page_max_chars": 5000,
+  "page_cache_seconds": 1800,
+  "page_read_top_n": 1,
+  "page_reader_fallback": false
 }
