@@ -32,6 +32,10 @@ data/memory/
 data/diary/
 data/reports/
 data/weekly/
+data/stickers/
+data/video/
+data/models/
+data/temp/
 
 # 系统与编辑器
 .DS_Store

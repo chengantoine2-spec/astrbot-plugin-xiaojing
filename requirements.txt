@@ -1,5 +1,13 @@
 aiohttp>=3.9
 Pillow>=10.0
+numpy>=1.26
 lunar_python>=1.4
 qrcode>=7.4
 pywin32>=306
+
+# 视频理解（可选；不装则视频功能自动不可用）
+yt-dlp>=2025.1.0
+faster-whisper>=1.2.0
+imageio-ffmpeg>=0.5.1
+# faster-whisper 依赖 av；av 19 会因 metadata_errors 参数被移除而报错
+av==15.1.0

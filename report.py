@@ -520,7 +520,7 @@ async def build_daily_png(out_dir: Path, period: str = "早报") -> Path:
         "holiday": hol,
         "almanac": almanac_info(),
         "weekend": weekend_days(),
-        "diary": load_diary(),
+        "diary": load_diary() if period != "早报" else "",
         "age_days": load_age_days(),
         "updates": updates,
     }
