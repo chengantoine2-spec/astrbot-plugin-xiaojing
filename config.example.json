@@ -114,5 +114,13 @@
   "page_max_chars": 5000,
   "page_cache_seconds": 1800,
   "page_read_top_n": 1,
-  "page_reader_fallback": false
+  "page_reader_fallback": false,
+  "page_shot_enabled": true,
+  "page_shot_width": 1280,
+  "page_shot_height": 2400,
+  "page_shot_timeout": 30,
+  "page_shot_cache_seconds": 1800,
+  "home_enabled": true,
+  "home_selfie_cooldown_seconds": 300,
+  "home_activity_minutes": 45
 }

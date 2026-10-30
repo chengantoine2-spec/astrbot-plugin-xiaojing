@@ -24,9 +24,11 @@ import json
 import os
 import random
 import re
+import shutil
 import socket
 import sqlite3
 import subprocess
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -48,6 +50,11 @@ try:
     from .report import build_daily_png
 except Exception:
     from report import build_daily_png
+
+try:
+    from .home_scene import render_home_scene
+except Exception:
+    from home_scene import render_home_scene
 
 try:
     from .netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
@@ -73,6 +80,9 @@ RITUAL_PATH = DATA_DIR / "ritual_state.json"
 WEEKLY_DIR = DATA_DIR / "weekly"
 DIARY_DIR = DATA_DIR / "diary"
 DIARY_DIGEST_PATH = DATA_DIR / "diary_digest.json"
+HOME_PATH = DATA_DIR / "home.json"
+HOME_SELFIE_DIR = DATA_DIR / "home" / "selfies"
+HOME_SELFIE_DIR.mkdir(parents=True, exist_ok=True)
 SELF_PATH = DATA_DIR / "self.md"
 CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
@@ -136,6 +146,14 @@ DEFAULTS = {
     "page_cache_seconds": 1800,
     "page_read_top_n": 1,
     "page_reader_fallback": False,
+    "page_shot_enabled": True,
+    "page_shot_width": 1280,
+    "page_shot_height": 2400,
+    "page_shot_timeout": 30,
+    "page_shot_cache_seconds": 1800,
+    "home_enabled": True,
+    "home_selfie_cooldown_seconds": 300,
+    "home_activity_minutes": 45,
     "decide_mode": "model",
     "judge_model": "glm-5.3-flash",
     "chat_model": "deepseek-v4.1-flash",
@@ -186,7 +204,16 @@ REPORT_MARK_RE = re.compile(r"\[\[REPORT[:：]\s*(早报|晚报)\s*\]\]")
 HISTORY_MARK_RE = re.compile(r"\[\[HISTORY[:：]\s*(.*?)\]\]")
 SEARCH_MARK_RE = re.compile(r"\[\[SEARCH[:：]\s*(.+?)\]\]")
 PAGE_MARK_RE = re.compile(r"\[\[READ[:：]\s*(https?://[^\]\s]+)\s*\]\]", re.I)
+SHOT_MARK_RE = re.compile(r"\[\[SHOT[:：]\s*(https?://[^\]\s]+)\s*\]\]", re.I)
+SELFIE_MARK_RE = re.compile(r"\[\[SELFIE(?::[^\]]*)?\]\]", re.I)
 URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
+
+
+def clean_marker_residue(text: str) -> str:
+    """删掉能力标记后，清掉只剩下列表符号的空行。"""
+    text = re.sub(r"(?m)^\s*[-*•–—]\s*$", "", text or "")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def load_cfg() -> dict:
@@ -235,6 +262,7 @@ class Main(star.Star):
         self._fee_cache: dict[int, int] = {}
         self._vision_cache: dict[str, tuple[float, str]] = {}
         self._page_cache: dict[str, tuple[float, dict]] = {}
+        self._shot_lock = asyncio.Lock()
         self._vision_multi_cache: dict[str, tuple[float, str]] = {}
         self._enrich_cache: dict[str, tuple[float, dict]] = {}
         self._audio_cache: dict[str, tuple[float, bool]] = {}
@@ -380,6 +408,8 @@ class Main(star.Star):
             "【能力标记】需要时在回复最后另起一行，每次只用一次、只写一个："
             "- [[SEARCH:关键词]] 查实时信息、需要来源"
             "- [[READ:网址]] 打开网页读正文（对方发链接、要你看文章/详细分析时；只写 http/https 网址）"
+            "- [[SHOT:网址]] 打开网页并截图发给对方（对方要截图、想看页面长什么样时）"
+            "- [[SELFIE]] 发一张你在房间里的当前实况截图（对方问你在干嘛、想看你现在什么样时）"
             "- [[MUSIC:歌名 歌手 或 想要的风格]] 分享网易云音乐（对方要听歌/求推荐时）；系统会把歌名、歌词和评论补给你后再说话"
             "- [[REPORT:早报|晚报]] 发日报长图（对方要日报、今天新闻汇总、早报/晚报时）"
             "- [[HISTORY:关键词或最近]] 查这个会话最近的聊天记录（对方问之前说过什么、群里发生过什么时）"
@@ -397,6 +427,7 @@ class Main(star.Star):
         )
         ctx = [self._env_line()]
         for line in (self._prefs_line(), self._site_line(), self._mood_line(), self._birthday_line(),
+                     self._home_line(),
                      ("\n[你对自己的认识] " + self._self_note()) if self._self_note() else "",
                      self._self_hint(), self._diary_hint()):
             if line:
@@ -445,6 +476,20 @@ class Main(star.Star):
         if uid not in [str(x) for x in self.cfg.get("owner_ids", [])]:
             return False
         t = text.strip()
+        if re.match(r"^(?:小鲸鱼?|小鲸)?[\s，,]*?(?:网页)?截图", t):
+            url = self._first_url(t)
+            if url:
+                ok = await self._send_page_shot(event, url)
+                if not ok:
+                    await self._reply_polished(event, "这个页面截图失败了，可能是加载超时或站点不让截。")
+                return True
+        if re.sub(r"^(小鲸鱼?|小鲸)[\s，,]*", "", t).strip(" ？?。!！") in (
+            "自拍", "拍一张", "来张自拍", "看看你",
+        ):
+            cap = await self._send_selfie(event, force=True)
+            if cap:
+                self._reply(event, cap)
+            return True
         if any(k in t for k in ("冷一点", "安静点", "别吵")):
             self._apply_preset("cold")
             await self._reply_polished(event, f"热度已调冷：安静 {self.cfg['idle_minutes']} 分钟，冒泡概率 {int(self.cfg['idle_chance']*100)}%。", "语气懒散一点。")
@@ -560,7 +605,17 @@ class Main(star.Star):
         if not m:
             return ""
         raw = re.split(r"[，。！？；：、）】]", m.group(0))[0]
-        return raw.rstrip(",.!?;:)）]】>")
+        raw = raw.rstrip(",.!?;:)）]】>")
+        # 常见输入：「https://.../小鲸鱼，截这个网页的图」
+        # 把紧贴在 URL 后面的称呼/指令词从路径里去掉
+        parts = raw.rsplit("/", 1)
+        if len(parts) == 2 and parts[1]:
+            tail = parts[1]
+            if tail.startswith(("小鲸鱼", "小鲸", "鲸鱼娘")) or tail in (
+                "截图", "截屏", "截个图", "截一张",
+            ):
+                raw = parts[0] + "/"
+        return raw
 
     @staticmethod
     async def _url_allowed(url: str) -> bool:
@@ -630,8 +685,15 @@ class Main(star.Star):
         for tag in soup(["script", "style", "noscript", "svg", "iframe", "nav", "header",
                          "footer", "aside", "form", "button", "input", "select", "textarea"]):
             tag.decompose()
+        body = soup.body or soup
         root = soup.find("article") or soup.find("main") or soup.find(attrs={"role": "main"})
-        if root is None:
+        if root is not None:
+            root_len = len(root.get_text(" ", strip=True))
+            body_len = len(body.get_text(" ", strip=True))
+            # 有些首页的 <main> 只有标题，真正内容在 body 的其他容器里
+            if body_len > 400 and root_len < max(200, body_len * 0.25):
+                root = body
+        else:
             best, best_len = None, 0
             for cand in soup.find_all(["div", "section"], limit=2000):
                 ps = cand.find_all("p")
@@ -640,19 +702,26 @@ class Main(star.Star):
                 ln = sum(len(p.get_text(" ", strip=True)) for p in ps)
                 if ln > best_len:
                     best, best_len = cand, ln
-            root = best or soup.body or soup
+            root = best or body
         text = root.get_text("\n", strip=True)
         junk = {"个人中心", "无障碍", "登录", "注册", "首页", "返回顶部", "设为首页",
-                "加入收藏", "繁體", "English", "简/繁", "分享", "打印"}
+                "加入收藏", "繁體", "English", "简/繁", "分享", "打印",
+                "主页", "文章", "归档", "分类", "标签", "系列", "关于我", "更多",
+                "亮色", "暗色", "跟随系统", "音乐", "暂未播放", "暂无歌词",
+                "找不到相关结果。", "GitHub", "/"}
         lines = []
+        seen = set()
         for line in text.splitlines():
             line = re.sub(r"[ \t\r\f\v]+", " ", line).strip()
             if len(line) <= 2 or line in junk:
                 continue
             if re.fullmatch(r"https?://\S+", line):
                 continue
-            if lines and line == lines[-1]:
+            if line.isdigit() and len(line) <= 3:
                 continue
+            if line in seen:
+                continue
+            seen.add(line)
             lines.append(line)
         return title.strip()[:160], "\n".join(lines)
 
@@ -720,7 +789,12 @@ class Main(star.Star):
                             charset = r.charset or ""
                         except Exception:
                             charset = ""
-                        raw = await r.content.read(2 * 1024 * 1024 + 1)
+                        buf = bytearray()
+                        async for chunk in r.content.iter_chunked(64 * 1024):
+                            buf.extend(chunk)
+                            if len(buf) > 2 * 1024 * 1024:
+                                break
+                        raw = bytes(buf)
                         break
                 else:
                     out = {"ok": False, "url": final, "error": "重定向过多"}
@@ -809,7 +883,7 @@ class Main(star.Star):
         m = PAGE_MARK_RE.search(text or "")
         if not m:
             return text, None
-        return PAGE_MARK_RE.sub("", text).strip(), m.group(1).strip()
+        return clean_marker_residue(PAGE_MARK_RE.sub("", text)), m.group(1).strip()
 
     async def _page_answer(self, url: str, text: str, umo: str | None) -> str:
         page = await self._read_page(url)
@@ -831,6 +905,159 @@ class Main(star.Star):
         if reply:
             return reply
         return f"我看了《{page.get('title') or page.get('url')}》，这次没整理出来。链接：{page.get('url')}"
+
+    # ---------------- 网页截图 ----------------
+    def _browser_path(self) -> str:
+        for env in ("EDGE_PATH", "CHROME_PATH"):
+            p = os.environ.get(env)
+            if p and Path(p).exists():
+                return p
+        roots = [
+            os.environ.get("ProgramFiles(x86)"),
+            os.environ.get("ProgramFiles"),
+            os.environ.get("LOCALAPPDATA"),
+        ]
+        rels = [
+            r"Microsoft\Edge\Application\msedge.exe",
+            r"Google\Chrome\Application\chrome.exe",
+        ]
+        for root in roots:
+            if not root:
+                continue
+            for rel in rels:
+                p = Path(root) / rel
+                if p.exists():
+                    return str(p)
+        for name in ("msedge", "chrome", "chromium"):
+            p = shutil.which(name)
+            if p:
+                return p
+        return ""
+
+    async def _final_url(self, url: str) -> str:
+        current = (url or "").strip()
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+                for _ in range(6):
+                    if not await self._url_allowed(current):
+                        return ""
+                    async with s.get(current, headers={"User-Agent": UA}, allow_redirects=False) as r:
+                        if r.status in (301, 302, 303, 307, 308):
+                            loc = r.headers.get("Location") or ""
+                            if not loc:
+                                return current
+                            current = urljoin(current, loc)
+                            continue
+                        return current
+        except Exception:
+            return ""
+        return ""
+
+    async def _screenshot_page(self, url: str, width: int | None = None, height: int | None = None) -> Path | None:
+        if not self.cfg.get("page_shot_enabled", True):
+            return None
+        url = self._first_url(url) or (url or "").strip()
+        if not url:
+            return None
+        try:
+            width = max(640, min(1920, int(width or self.cfg.get("page_shot_width", 1280))))
+            height = max(800, min(6000, int(height or self.cfg.get("page_shot_height", 2400))))
+            ttl = max(60, int(self.cfg.get("page_shot_cache_seconds", 1800)))
+        except Exception:
+            width, height, ttl = 1280, 2400, 1800
+        # 缓存键用原始 URL，命中时不必再做一次重定向探测
+        key = hashlib.sha1(f"{url}|{width}x{height}".encode("utf-8")).hexdigest()[:16]
+        out = CACHE_DIR / f"shot_{key}.png"
+        try:
+            if out.exists() and time.time() - out.stat().st_mtime < ttl:
+                return out
+        except Exception:
+            pass
+        final = await self._final_url(url)
+        if not final:
+            logger.info(f"[小鲸] 截图地址不可用：{url}")
+            return None
+        browser = self._browser_path()
+        if not browser:
+            if not getattr(self, "_browser_warned", False):
+                self._browser_warned = True
+                logger.warning("[小鲸] 未找到 Edge/Chrome，网页截图不可用")
+            return None
+        tmpdir = Path(tempfile.mkdtemp(prefix="xiaojing_shot_"))
+        tmp_png = tmpdir / "shot.png"
+        args = [
+            browser,
+            "--headless=new",
+            "--disable-gpu",
+            "--hide-scrollbars",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--metrics-recording-only",
+            "--mute-audio",
+            f"--user-data-dir={tmpdir / 'profile'}",
+            f"--window-size={width},{height}",
+            "--virtual-time-budget=6000",
+            "--run-all-compositor-stages-before-draw",
+            f"--screenshot={tmp_png}",
+            final,
+        ]
+        kwargs = {"capture_output": True, "timeout": int(self.cfg.get("page_shot_timeout", 30))}
+        if os.name == "nt":
+            kwargs["creationflags"] = 0x08000000
+        try:
+            async with self._shot_lock:
+                await asyncio.to_thread(subprocess.run, args, **kwargs)
+            if not tmp_png.exists() or tmp_png.stat().st_size < 8000:
+                logger.info(f"[小鲸] 截图失败或文件过小：{final}")
+                return None
+            if out.exists():
+                out.unlink()
+            shutil.move(str(tmp_png), str(out))
+            logger.info(f"[小鲸] 网页截图 {final} → {out.name}（{out.stat().st_size // 1024}KB）")
+            return out
+        except Exception as e:
+            logger.info(f"[小鲸] 截图异常：{e}")
+            return None
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    async def _send_page_shot(self, event, url: str, caption: str = "") -> bool:
+        fp = await self._screenshot_page(url)
+        if not fp:
+            return False
+        chain = []
+        if caption:
+            chain.append(Plain(text=caption.strip() + "\n"))
+        chain.append(Image(file=str(fp)))
+        umo = getattr(event, "unified_msg_origin", None)
+        return await self._send(event, MessageChain(chain=chain), umo)
+
+    @staticmethod
+    def _want_shot(text: str) -> bool:
+        return any(k in (text or "") for k in (
+            "截图", "截屏", "截个图", "截一张", "网页截图", "页面截图",
+            "截下来", "长什么样", "发张图看看",
+        ))
+
+    @staticmethod
+    def _take_shot_marker(text: str) -> tuple[str, str | None]:
+        m = SHOT_MARK_RE.search(text or "")
+        if not m:
+            return text, None
+        return clean_marker_residue(SHOT_MARK_RE.sub("", text)), m.group(1).strip()
+
+    async def _resolve_shot_marker(self, reply: str, event, shot_sent: bool) -> tuple[str, bool]:
+        reply, url = self._take_shot_marker(reply)
+        if not url:
+            return reply, shot_sent
+        if not shot_sent:
+            shot_sent = await self._send_page_shot(event, url)
+        if not reply:
+            reply = "截好了，给你。" if shot_sent else "这个页面截图没成功。"
+        return reply, shot_sent
 
     def _vision_key(self) -> str:
         if self.cfg.get("vision_api_key"):
@@ -2221,6 +2448,7 @@ class Main(star.Star):
         return parts
 
     async def _send_chat(self, event, text, img_url=None, img_data=None, sticker=None) -> bool:
+        text = clean_marker_residue(text)
         try:
             if event is not None and text:
                 text = self._fix_address(text, str(event.get_sender_id()))
@@ -2493,6 +2721,8 @@ class Main(star.Star):
 
     # ---------------- 发送 ----------------
     def _maybe_decorate(self, text: str, img_url: str | None = None, img_data: bytes | None = None, sticker: str | None = None):
+        if text:
+            text = clean_marker_residue(text)
         chain = []
         if sticker:
             try:
@@ -2587,8 +2817,8 @@ class Main(star.Star):
         img = IMG_MARK_RE.search(text or "")
         sea = SEARCH_MARK_RE.search(text or "")
         clean = IMG_MARK_RE.sub("", text or "")
-        clean = SEARCH_MARK_RE.sub("", clean).strip()
-        return clean, (img.group(1).strip() if img else None), (sea.group(1).strip() if sea else None)
+        clean = SEARCH_MARK_RE.sub("", clean)
+        return clean_marker_residue(clean), (img.group(1).strip() if img else None), (sea.group(1).strip() if sea else None)
 
     def _already_woken(self, event: AstrMessageEvent, text: str) -> bool:
         try:
@@ -3252,6 +3482,161 @@ class Main(star.Star):
         line = random.choice(candidates)
         return f"\n[你昨天日记里写过] {line[:80]}（合适时可以自然提起，不必每句都提）。"
 
+    # ---------------- 小鲸的家 ----------------
+    def _load_home(self) -> dict:
+        try:
+            if HOME_PATH.exists():
+                data = json.loads(HOME_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        mood = self._load_mood()
+        return {
+            "room": "小鲸的卧室",
+            "activity": "发呆",
+            "activity_since": 0,
+            "activity_until": 0,
+            "mood": str(mood.get("mood") or "平静"),
+            "energy": int(mood.get("energy") or 70),
+            "last_selfie": {},
+        }
+
+    def _save_home(self, data: dict) -> None:
+        try:
+            HOME_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _pick_activity(self, force: bool = False) -> dict:
+        st = self._load_home()
+        now = time.time()
+        until = float(st.get("activity_until") or 0)
+        if not force and st.get("activity") and now < until:
+            mood = self._load_mood()
+            st["mood"] = str(mood.get("mood") or st.get("mood") or "平静")
+            st["energy"] = int(mood.get("energy") or st.get("energy") or 70)
+            return st
+        hour = int(time.strftime("%H", time.gmtime(now + 8 * 3600)))
+        if hour < 6 or hour >= 23:
+            pool = ["睡觉", "趴床"]
+        elif hour < 9:
+            pool = ["睡觉", "喝可乐", "看书"]
+        elif hour < 12:
+            pool = ["看书", "写日记", "整理书桌"]
+        elif hour < 14:
+            pool = ["喝可乐", "撸猫", "看书"]
+        elif hour < 18:
+            pool = ["打游戏", "看书", "整理书桌"]
+        elif hour < 20:
+            pool = ["喝可乐", "撸猫", "打游戏"]
+        else:
+            pool = ["打游戏", "写日记", "看书"]
+        mood = self._load_mood()
+        energy = int(mood.get("energy") or 70)
+        if energy < 35:
+            pool = ["睡觉", "趴床", "喝可乐"]
+        cur = str(st.get("activity") or "")
+        if len(pool) > 1 and cur in pool:
+            pool = [x for x in pool if x != cur]
+        act = random.choice(pool) if pool else "发呆"
+        base = max(15, int(self.cfg.get("home_activity_minutes", 45)))
+        minutes = random.randint(max(15, int(base * 0.7)), max(20, int(base * 1.6)))
+        st.update({
+            "room": st.get("room") or "小鲸的卧室",
+            "activity": act,
+            "activity_since": now,
+            "activity_until": now + minutes * 60,
+            "mood": str(mood.get("mood") or "平静"),
+            "energy": max(5, min(100, energy)),
+        })
+        self._save_home(st)
+        return st
+
+    def _home_line(self) -> str:
+        try:
+            st = self._load_home()
+            act = str(st.get("activity") or "发呆")
+            mood = str(st.get("mood") or "平静")
+            energy = int(st.get("energy") or 70)
+            return (f"\n[你现在在家] 小鲸的卧室；当前活动：{act}；心情：{mood}；"
+                    f"精力：{energy}/100。被问在干嘛时，可以自然说，也可以发 [[SELFIE]]。")
+        except Exception:
+            return ""
+
+    def _selfie_caption(self, activity: str, mood: str = "") -> str:
+        lines = {
+            "打游戏": "在打游戏呀，刚开一局。",
+            "看书": "窝在地毯上看书，正好看到有意思的一段。",
+            "写日记": "在书桌前写日记，顺便把今天的事记下来。",
+            "喝可乐": "在床边喝可乐，顺便发会儿呆。",
+            "睡觉": "刚躺下，差点就睡着了……",
+            "趴床": "趴在床上不想动，今天有点累。",
+            "撸猫": "在撸猫，它现在假装不理我。",
+            "整理书桌": "在收拾书桌，越收越乱。",
+        }
+        text = lines.get(activity, "在房间里发呆。")
+        if mood in ("困", "低落") and activity not in ("睡觉", "趴床"):
+            text += " 有点没精神……"
+        return text
+
+    async def _render_selfie(self, force: bool = False) -> tuple[Path, str, str]:
+        st = self._pick_activity(force=False)
+        activity = str(st.get("activity") or "发呆")
+        mood = str(st.get("mood") or "平静")
+        energy = int(st.get("energy") or 70)
+        caption = self._selfie_caption(activity, mood)
+        cooldown = max(0, int(self.cfg.get("home_selfie_cooldown_seconds", 300)))
+        last = st.get("last_selfie") or {}
+        last_raw = str(last.get("path") or "")
+        last_path = Path(last_raw) if last_raw else None
+        try:
+            if (not force and last.get("activity") == activity and last_path and last_path.exists()
+                    and time.time() - float(last.get("ts") or 0) < cooldown):
+                return last_path, activity, caption
+        except Exception:
+            pass
+        portrait = DATA_DIR / "assets" / "whale_bg.webp"
+        stamp = time.strftime("%H:%M", time.gmtime(time.time() + 8 * 3600))
+        out = HOME_SELFIE_DIR / f"selfie_{int(time.time() * 1000)}.png"
+        await asyncio.to_thread(
+            render_home_scene, activity, mood, energy,
+            str(portrait) if portrait.exists() else None, str(out), stamp,
+        )
+        st["last_selfie"] = {"ts": time.time(), "path": str(out), "activity": activity}
+        self._save_home(st)
+        return out, activity, caption
+
+    async def _send_selfie(self, event, force: bool = False) -> str:
+        fp, activity, caption = await self._render_selfie(force=force)
+        umo = getattr(event, "unified_msg_origin", None)
+        ok = await self._send(event, MessageChain(chain=[Image(file=str(fp))]), umo)
+        if not ok:
+            return "自拍没发出去……稍后再试一次？"
+        logger.info(f"[小鲸] 自拍：{activity} → {fp.name}")
+        return caption
+
+    async def _chat_or_selfie(self, text: str, event, prompt: str, umo: str | None):
+        if (self.cfg.get("home_enabled", True) and self._wants_selfie(text)
+                and not (self._want_shot(text) and self._first_url(text))):
+            return await self._send_selfie(event), True
+        return await self._llm(prompt, umo), False
+
+    @staticmethod
+    def _wants_selfie(text: str) -> bool:
+        keys = (
+            "在干什么", "在干嘛", "干嘛呢", "在做什么", "做什么呢", "忙什么", "忙啥",
+            "自拍", "拍一张", "来张自拍", "看看你", "你现在在", "发张照片", "发张自拍",
+        )
+        return any(k in (text or "") for k in keys)
+
+    @staticmethod
+    def _take_selfie_marker(text: str) -> tuple[str, bool]:
+        m = SELFIE_MARK_RE.search(text or "")
+        if not m:
+            return text, False
+        return clean_marker_residue(SELFIE_MARK_RE.sub("", text)), True
+
     # ---------------- 自我迭代 ----------------
     def _self_note(self) -> str:
         try:
@@ -3518,26 +3903,34 @@ class Main(star.Star):
                 return
 
             seen = await self._describe_images(event, text)
+            shot_url = self._first_url(text) if self._want_shot(text) else ""
+            shot_sent = await self._send_page_shot(event, shot_url) if shot_url else False
             page_note = await self._page_note(text)
+            if shot_sent:
+                page_note += "\n[你已经把网页截图发给对方了，不要再声称看不到页面。]\n"
+            elif shot_url:
+                page_note += "\n[对方要求网页截图，但截图失败；请用一句短话说明截图没成功。]\n"
             img_url, img_data, sticker = None, None, None
-            reply = await self._llm(
+            prompt = (
                 (f"（对方发来一张图，你看到的是：{seen}）\n" if seen else "")
                 + (card_note + "\n" if card_note else "")
                 + (page_note if page_note else "")
                 + self._who_line(uid, event.get_sender_name() or "对方") + "\n"
-                + f"他说：{text or '（只分享了上面的音乐卡片）'}\n请以你的身份自然回应，一到三句，别客套。",
-                f"{event.unified_msg_origin}#{uid}",
+                + f"他说：{text or '（只分享了上面的音乐卡片）'}\n请以你的身份自然回应，一到三句，别客套。"
+            )
+            reply, selfie_sent = await self._chat_or_selfie(
+                text, event, prompt, f"{event.unified_msg_origin}#{uid}"
             )
             music_q = None
             _mm = MUSIC_MARK_RE.search(reply or "")
             if _mm:
                 music_q = _mm.group(1).strip()
-                reply = MUSIC_MARK_RE.sub("", reply).strip()
+                reply = clean_marker_residue(MUSIC_MARK_RE.sub("", reply))
             reply, marker_img, marker_search = self._extract_markers(reply)
             _hm = HISTORY_MARK_RE.search(reply or "")
             if _hm:
                 _q = _hm.group(1).strip()
-                reply = HISTORY_MARK_RE.sub("", reply).strip()
+                reply = clean_marker_residue(HISTORY_MARK_RE.sub("", reply))
                 _ctx = await self._fetch_history(event, _q)
                 if _ctx:
                     reply = await self._llm(
@@ -3563,6 +3956,13 @@ class Main(star.Star):
                     reply, page_url = self._take_page_marker(reply)
                     if page_url:
                         reply = await self._page_answer(page_url, text, event.unified_msg_origin)
+            reply, shot_sent = await self._resolve_shot_marker(reply, event, shot_sent)
+            reply, selfie_mark = self._take_selfie_marker(reply)
+            if selfie_mark and not selfie_sent:
+                cap = await self._send_selfie(event)
+                selfie_sent = True
+                if not reply:
+                    reply = cap
 
             if marker_img and not img_url and not sticker:
                 sticker = await self._pick_sticker(marker_img)
@@ -3571,7 +3971,7 @@ class Main(star.Star):
 
             _rm = REPORT_MARK_RE.search(reply or "")
             if _rm:
-                reply = REPORT_MARK_RE.sub("", reply).strip()
+                reply = clean_marker_residue(REPORT_MARK_RE.sub("", reply))
                 await self._send_report(event.unified_msg_origin, _rm.group(1), event)
                 self._stop(event)
                 return
@@ -3589,7 +3989,7 @@ class Main(star.Star):
                     self._record_music(song)
                     reply = await self._share_music(event, song, reply, text)
             reply = await self._verify_reply(text, reply, event.unified_msg_origin)
-            reply = self._fix_address(reply, uid)
+            reply = clean_marker_residue(self._fix_address(reply, uid))
             if reply or img_url or sticker:
                 if await self._send_chat(event, reply, img_url, img_data, sticker):
                     _sess = f"{event.unified_msg_origin}#{uid}"
@@ -3613,6 +4013,8 @@ class Main(star.Star):
             interesting = bool(verdict.get("speak"))
         if not interesting and self._first_url(text) and uid in [str(x) for x in self.cfg.get("owner_ids", [])]:
             interesting = True
+        if not interesting and self._wants_selfie(text) and uid in [str(x) for x in self.cfg.get("owner_ids", [])]:
+            interesting = True
         if not interesting:
             if text and not imgs and not cards:
                 self._pending_text[key] = (text, now)
@@ -3628,16 +4030,24 @@ class Main(star.Star):
         img_url, img_data, sticker = None, None, None
         await self._ensure_title(uid, sender)
         seen = await self._describe_images(event, text)
+        shot_url = self._first_url(text) if self._want_shot(text) else ""
+        shot_sent = await self._send_page_shot(event, shot_url) if shot_url else False
         page_note = await self._page_note(text)
-        reply = await self._llm(
+        if shot_sent:
+            page_note += "\n[你已经把网页截图发给对方了，不要再声称看不到页面。]\n"
+        elif shot_url:
+            page_note += "\n[对方要求网页截图，但截图失败；请用一句短话说明截图没成功。]\n"
+        prompt = (
             (f"（对方发来一张图，你看到的是：{seen}）\n" if seen else "")
             + (card_note + "\n" if card_note else "")
             + (page_note if page_note else "")
             + self._who_line(uid, sender) + "\n"
             + f"他说：{text or '（只分享了上面的音乐卡片）'}\n"
             + ("（这是紧接着你上一句的追问，直接接着聊，不用重新打招呼。）\n" if in_window else "")
-            + "请以你的身份自然接话，一到两句，别复述原句，别客套。",
-            f"{event.unified_msg_origin}#{uid}",
+            + "请以你的身份自然接话，一到两句，别复述原句，别客套。"
+        )
+        reply, selfie_sent = await self._chat_or_selfie(
+            text, event, prompt, f"{event.unified_msg_origin}#{uid}"
         )
         reply, marker_img, marker_search = self._extract_markers(reply)
         _hm = HISTORY_MARK_RE.search(reply or "")
@@ -3670,6 +4080,13 @@ class Main(star.Star):
                 reply, page_url = self._take_page_marker(reply)
                 if page_url:
                     reply = await self._page_answer(page_url, text, event.unified_msg_origin)
+        reply, shot_sent = await self._resolve_shot_marker(reply, event, shot_sent)
+        reply, selfie_mark = self._take_selfie_marker(reply)
+        if selfie_mark and not selfie_sent:
+            cap = await self._send_selfie(event)
+            selfie_sent = True
+            if not reply:
+                reply = cap
 
         music_q = None
         _mm = MUSIC_MARK_RE.search(reply or "")
@@ -3705,7 +4122,7 @@ class Main(star.Star):
             self._stop(event)
             return
 
-        reply = self._fix_address(reply, uid)
+        reply = clean_marker_residue(self._fix_address(reply, uid))
         chain = self._maybe_decorate(reply, img_url, img_data, sticker)
         if await self._send(event, chain, event.unified_msg_origin):
             self._last_bot_reply = time.time()
@@ -4063,14 +4480,22 @@ class Main(star.Star):
         sender = event.get_sender_name() or "对方"
         await self._ensure_title(uid, sender)
         seen = await self._describe_images(event, text)
+        shot_url = self._first_url(text) if self._want_shot(text) else ""
+        shot_sent = await self._send_page_shot(event, shot_url) if shot_url else False
         page_note = await self._page_note(text)
-        reply = await self._llm(
+        if shot_sent:
+            page_note += "\n[你已经把网页截图发给对方了，不要再声称看不到页面。]\n"
+        elif shot_url:
+            page_note += "\n[对方要求网页截图，但截图失败；请用一句短话说明截图没成功。]\n"
+        prompt = (
             (f"（对方发来一张图，你看到的是：{seen}）\n" if seen else "")
             + (card_note + "\n" if card_note else "")
             + (page_note if page_note else "")
             + self._who_line(uid, sender) + "\n"
-            + f"他私聊你说：{text or '（只分享了上面的音乐卡片）'}\n请以你的身份自然回应，一到三句，别客套。",
-            event.unified_msg_origin,
+            + f"他私聊你说：{text or '（只分享了上面的音乐卡片）'}\n请以你的身份自然回应，一到三句，别客套。"
+        )
+        reply, selfie_sent = await self._chat_or_selfie(
+            text, event, prompt, event.unified_msg_origin
         )
 
         music_q = None
@@ -4110,6 +4535,13 @@ class Main(star.Star):
                 reply, page_url = self._take_page_marker(reply)
                 if page_url:
                     reply = await self._page_answer(page_url, text, event.unified_msg_origin)
+        reply, shot_sent = await self._resolve_shot_marker(reply, event, shot_sent)
+        reply, selfie_mark = self._take_selfie_marker(reply)
+        if selfie_mark and not selfie_sent:
+            cap = await self._send_selfie(event)
+            selfie_sent = True
+            if not reply:
+                reply = cap
 
         _rm = REPORT_MARK_RE.search(reply or "")
         if _rm:
@@ -4132,7 +4564,7 @@ class Main(star.Star):
                 reply = await self._share_music(event, song, reply, text)
 
         reply = await self._verify_reply(text, reply, event.unified_msg_origin)
-        reply = self._fix_address(reply, uid)
+        reply = clean_marker_residue(self._fix_address(reply, uid))
         if await self._send_chat(event, reply, img_url, img_data, sticker):
             self._remember(event.unified_msg_origin, text, reply)
             self._hot_add(event.unified_msg_origin, text, reply)
