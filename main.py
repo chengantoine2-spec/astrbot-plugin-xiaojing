@@ -6258,9 +6258,17 @@ class Main(star.Star):
                     if not targets:
                         continue
                     try:
-                        if period == "晚报":
-                            await self._write_diary()
-                        fp = await build_daily_png(DATA_DIR / "reports", period)
+                        cache = getattr(self, "_report_cache", None)
+                        if cache is None:
+                            cache = {}
+                            self._report_cache = cache
+                        cache_key = f"{day}:{hm}"
+                        fp = cache.get(cache_key)
+                        if not (isinstance(fp, Path) and fp.exists()):
+                            if period == "晚报":
+                                await self._write_diary()
+                            fp = await build_daily_png(DATA_DIR / "reports", period)
+                            cache[cache_key] = fp
                     except Exception as e:
                         logger.error(f"[小鲸] {period} 生成失败：{e}")
                         continue
