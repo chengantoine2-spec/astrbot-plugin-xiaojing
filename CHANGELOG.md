@@ -8,7 +8,7 @@
 - 主动消息闸门：免打扰时段、每日上限、最小间隔
 - 离线语音：Windows SAPI + AstrBot Record，voice_enabled 开关
 - 生命周期：terminate() 取消日报/待跟进/仪式/空闲/地区任务
-- 称呼记忆：以 QQ 号为准，QQ 名作显示名；只记明确说过的称呼，不确定用「你」；回复限制 1–2 个气泡
+- 称呼记忆：以 QQ 号为准，QQ 名作显示名；只记明确说过的称呼，默认用 QQ 名；回复限制 1–2 个气泡
 - 文档：IMAGE_EXPRESSION.md、IMAGE_STUDIO.md、MEMORY.md、VOICE.md
 
 ## 1.2.0 — 2026-10-30
