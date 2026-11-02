@@ -131,6 +131,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
+BUILD = "1.3.0"
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
 FACTS_PATH = MEM_DIR / "facts.json"
@@ -672,12 +673,47 @@ class Main(star.Star):
             logger.warning(f"[小鲸] 模型调用失败: {e}")
             return ""
 
+    async def _status_report(self, event) -> None:
+        facts = self._facts_state().get("facts", [])
+        people = self._people_state().get("people", {})
+        now = time.time()
+        sess = getattr(event, "unified_msg_origin", self._umo) or "default"
+        sent = len([t for t in self._image_budget_state()[0].get(sess, []) if now - t < 600])
+        pst = self._proactive_state()
+        caps = int(self.cfg.get("proactive_daily_cap", 6))
+        tasks = []
+        for name in ("_report_task", "_loop_task", "_ritual_task", "_idle_task"):
+            task = getattr(self, name, None)
+            tasks.append(f"{name.replace('_task','').lstrip('_')}={'✓' if task and not task.done() else '×'}")
+        top = []
+        for tpl in image_studio.templates():
+            tid = str(tpl.get("id") or "")
+            score = self._feedback_score(tid)
+            if tid and score:
+                top.append(f"{tid}{score:+d}")
+        lines = [
+            f"小鲸 v{BUILD}",
+            f"记忆：事实 {len(facts)} 条 / 人物 {len(people)} 个",
+            f"图片：10 分钟 {sent}/{int(self.cfg.get('image_budget_per_10min', 4))}；"
+            f"{'；'.join(top) if top else '暂无反馈'}",
+            f"主动：今日 {int(pst.get('count') or 0)}/{caps}；"
+            f"免打扰 {self.cfg.get('proactive_quiet_start')}–{self.cfg.get('proactive_quiet_end')}",
+            f"语音：{'开启' if self.cfg.get('voice_enabled', True) else '关闭'}；"
+            f"Record {'可用' if Record is not None else '不可用'}",
+            "任务：" + " ".join(tasks),
+        ]
+        await self._reply(event, "\n".join(lines))
+
     # ---------------- 配置命令 ----------------
     async def _handle_command(self, event: AstrMessageEvent, text: str) -> bool:
         uid = str(event.get_sender_id())
         if uid not in [str(x) for x in self.cfg.get("owner_ids", [])]:
             return False
         t = text.strip()
+        core0 = re.sub(r"^(小鲸鱼?|小鲸)[\s，,]*", "", t).strip(" ？?。!！")
+        if core0 in ("状态", "体检", "自检"):
+            await self._status_report(event)
+            return True
         if re.match(r"^(?:小鲸鱼?|小鲸)?[\s，,]*?(?:网页)?截图", t):
             url = self._first_url(t)
             if url:
