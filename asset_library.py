@@ -32,10 +32,11 @@ def assets(kind: str = "") -> list[dict]:
 
 
 def pick(activity: str = "", kind: str = "", mood: str = "", form: str = "",
-         rng=None) -> dict | None:
-    """按形象/标签给素材打分；同分随机，避免每次都同一张。
+         night: bool | None = None, rng=None) -> dict | None:
+    """按形象/时间/标签给素材打分；同分随机，避免每次都同一张。
 
     form="q" 默认优先 Q 版；form="mature" 时硬过滤到成熟版，尊重明确要求。
+    night=True/False 时优先当前昼夜的素材，避免白天发夜景。
     """
     items = assets(kind)
     if not kind:
@@ -46,6 +47,13 @@ def pick(activity: str = "", kind: str = "", mood: str = "", form: str = "",
         mature = [a for a in items if str(a.get("form") or "") == "mature"]
         if mature:
             items = mature
+    want_time = ""
+    if night is not None:
+        want_time = "night" if night else "day"
+        matching = [a for a in items
+                    if str(a.get("time") or "any") in (want_time, "any")]
+        if matching:
+            items = matching
     if not items:
         return None
     act = str(activity or "")
@@ -58,6 +66,8 @@ def pick(activity: str = "", kind: str = "", mood: str = "", form: str = "",
         score = 0
         if form and str(item.get("form") or "") == form:
             score += 6
+        if want_time and str(item.get("time") or "any") == want_time:
+            score += 4
         if act and act in preferred:
             score += 20
         if act and act in tags:

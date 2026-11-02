@@ -4634,6 +4634,21 @@ class Main(star.Star):
             text += " 有点没精神……"
         return text
 
+    def _asset_caption(self, item: dict | None, activity: str, mood: str = "") -> str:
+        """优先用素材自带的场景文案，避免图上是书桌、文案说地毯。"""
+        try:
+            caps = (item or {}).get("captions") or {}
+            if isinstance(caps, dict) and activity in caps:
+                text = str(caps.get(activity) or "").strip()
+                if text:
+                    return text
+            text = str((item or {}).get("caption") or "").strip()
+            if text:
+                return text
+        except Exception:
+            pass
+        return self._selfie_caption(activity, mood)
+
     async def _render_selfie(self, force: bool = False, style: str | None = None,
                              form: str | None = None) -> tuple[Path, str, str]:
         st = self._pick_activity(force=False)
@@ -4647,6 +4662,8 @@ class Main(star.Star):
         form = str(form or self.cfg.get("home_selfie_form") or "q").lower()
         if form not in ("q", "mature"):
             form = "q"
+        hour = int(time.strftime("%H", time.gmtime(time.time() + 8 * 3600)))
+        night = hour < 6 or hour >= 18
         cooldown = max(0, int(self.cfg.get("home_selfie_cooldown_seconds", 300)))
         last = st.get("last_selfie") or {}
         last_raw = str(last.get("path") or "")
@@ -4657,7 +4674,7 @@ class Main(star.Star):
                     and str(last.get("form") or "") == form
                     and last_path and last_path.exists()
                     and time.time() - float(last.get("ts") or 0) < cooldown):
-                return last_path, activity, caption
+                return last_path, activity, str(last.get("caption") or caption)
         except Exception:
             pass
         stamp = time.strftime("%H:%M", time.gmtime(time.time() + 8 * 3600))
@@ -4665,10 +4682,11 @@ class Main(star.Star):
         rendered = False
         if style == "premium":
             try:
-                item = asset_library.pick(activity, mood=mood, form=form)
+                item = asset_library.pick(activity, mood=mood, form=form, night=night)
                 asset_path = asset_library.resolve(item)
                 if asset_path:
                     form = str(item.get("form") or form)
+                    caption = self._asset_caption(item, activity, mood)
                     await asyncio.to_thread(
                         render_premium_selfie, activity, mood,
                         str(asset_path), str(out), stamp,
@@ -4679,13 +4697,15 @@ class Main(star.Star):
                 logger.warning(f"[小鲸] 精致自拍失败，回退像素：{e}")
         if not rendered:
             style = "pixel"
+            caption = self._selfie_caption(activity, mood)
             portrait = DATA_DIR / "assets" / "whale_bg.webp"
             await asyncio.to_thread(
                 render_home_scene, activity, mood, energy,
                 str(portrait) if portrait.exists() else None, str(out), stamp, "pixel",
             )
         st["last_selfie"] = {"ts": time.time(), "path": str(out),
-                             "activity": activity, "style": style, "form": form}
+                             "activity": activity, "style": style, "form": form,
+                             "caption": caption}
         self._save_home(st)
         self._prune_selfies()
         return out, activity, caption
