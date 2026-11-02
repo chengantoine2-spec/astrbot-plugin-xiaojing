@@ -77,6 +77,11 @@ except Exception:
     import image_tools
 
 try:
+    from . import image_studio
+except Exception:
+    import image_studio
+
+try:
     from .netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
 except Exception:
     from netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
@@ -267,6 +272,7 @@ SEARCH_MARK_RE = re.compile(r"\[\[SEARCH[:：]\s*(.+?)\]\]")
 PAGE_MARK_RE = re.compile(r"\[\[READ[:：]\s*(https?://[^\]\s]+)\s*\]\]", re.I)
 SHOT_MARK_RE = re.compile(r"\[\[SHOT[:：]\s*(https?://[^\]\s]+)\s*\]\]", re.I)
 SELFIE_MARK_RE = re.compile(r"\[\[SELFIE(?::[^\]]*)?\]\]", re.I)
+CARD_MARK_RE = re.compile(r"\[\[CARD(?:[:：]\s*([^\]]+))?\]\]", re.I)
 VIDEO_MARK_RE = re.compile(r"\[\[VIDEO(?:[:：]\s*(https?://[^\]\s]+))?\s*\]\]", re.I)
 CARD_REF_RE = re.compile(
     r"(?:看|看看|看下|看一下|解析|总结|讲讲|说说|评价|分析).{0,8}"
@@ -550,8 +556,10 @@ class Main(star.Star):
             "- [[REPORT:早报|晚报]] 发日报长图（对方要日报、今天新闻汇总、早报/晚报时）"
             "- [[HISTORY:关键词或最近]] 查这个会话最近的聊天记录（对方问之前说过什么、群里发生过什么时）"
             "- [[IMG:具体描述]] 配图或表情包（对方要图、或此刻用图更自然时）"
+            "- [[CARD:模板|文字]] 做一张定制图（quote 语录卡 / meme 表情包 / achievement 成就卡）；模板可省略，文字不超过 60 字。"
             "[[IMG]] 的描述要短，不超过 20 字；不要复制上一段画面描述或整句需求。"
             "[[IMG]] 只是从网上找现成图片/表情包，不是画画。"
+            "轻松聊天时，大约每 6-8 条回复可以主动用一次 [[CARD:meme|短句]] 或 [[IMG:描述]]；不要连续刷图，严肃、技术、报错时不用。"
             "你会画简笔画、像素画和简单图标（猫/鲸鱼/人/心/星星/花/太阳/云/房子/树/蘑菇/笑脸）；"
             "也能找一张参考图，做成描边、铅笔、像素、海报或剪影风。"
             "猫、鲸鱼、心、星星这类可以直接画；狗、熊猫、兔子这类可以找参考图做风格化。"
@@ -4753,6 +4761,14 @@ class Main(star.Star):
             return text, False
         return clean_marker_residue(SELFIE_MARK_RE.sub("", text)), True
 
+    @staticmethod
+    def _take_card_marker(text: str) -> tuple[str, str]:
+        m = CARD_MARK_RE.search(text or "")
+        if not m:
+            return text, ""
+        spec = (m.group(1) or "").strip()
+        return clean_marker_residue(CARD_MARK_RE.sub("", text)), spec
+
     # ---------------- 视频 ----------------
     @staticmethod
     def _wants_video(text: str) -> bool:
@@ -5185,6 +5201,76 @@ class Main(star.Star):
         if ref:
             return await self._download(ref)
         return None
+
+    async def _render_card(self, spec: str, text: str, reply: str, event) -> bytes | None:
+        """按 [[CARD:模板|文字]] 或命令生成定制图。"""
+        spec = str(spec or "").strip()
+        template_id = "quote"
+        content = ""
+        if spec:
+            if "|" in spec:
+                template_id, content = spec.split("|", 1)
+                template_id = template_id.strip() or "quote"
+            elif spec in ("quote", "meme", "achievement", "edit"):
+                template_id = spec
+            else:
+                content = spec
+        content = (content or reply or text or "").strip()
+        if not content:
+            content = "今天也在好好生活。"
+        content = content[:120]
+        source = None
+        try:
+            tpl = image_studio.pick_template(template_id)
+            if str(tpl.get("kind") or "") in ("meme", "edit_text"):
+                source = await self._event_image_bytes(event)
+            return await asyncio.to_thread(
+                image_studio.render, template_id, content, source,
+            )
+        except Exception as e:
+            logger.info(f"[小鲸] 定制图失败：{e}")
+            return None
+
+    async def _image_studio_command(self, event, text: str) -> bool:
+        """用户直接下命令做图：定制图 / 表情包 / 成就卡 / 改图加字。"""
+        t = re.sub(r"^(小鲸鱼?|小鲸)[\s，,]*", "", (text or "").strip()).strip()
+        if not t:
+            return False
+        prefixes = (
+            ("定制图", "quote"), ("做张图", "quote"), ("语录卡", "quote"), ("小鲸鱼说", "quote"),
+            ("成就卡", "achievement"), ("表情包", "meme"), ("做表情包", "meme"),
+            ("改图", "edit"), ("加字", "edit"),
+        )
+        for prefix, template in prefixes:
+            if not t.startswith(prefix):
+                continue
+            content = t[len(prefix):].strip(" ：:，,。")
+            source = None
+            if template in ("meme", "edit"):
+                source = await self._event_image_bytes(event)
+            if template == "edit" and not source:
+                await self._send(
+                    event,
+                    self._maybe_decorate("先发我一张图，我才能在上面加字～"),
+                    event.unified_msg_origin,
+                )
+                return True
+            if not content:
+                content = {"meme": "在的", "edit": "改好了"}.get(template, "今天也在好好生活。")
+            try:
+                data = await asyncio.to_thread(image_studio.render, template, content, source)
+            except Exception as e:
+                logger.info(f"[小鲸] 图片工坊失败：{e}")
+                await self._send(
+                    event,
+                    self._maybe_decorate("这张图没做出来……再试一次？"),
+                    event.unified_msg_origin,
+                )
+                return True
+            await self._send_chat(event, "做好了～", None, data, None)
+            self._remember_output_image(event, data, style=template)
+            return True
+        return False
 
     async def _annotate_reply(self, event, text: str) -> bool:
         data = await self._event_image_bytes(event)
@@ -5755,6 +5841,9 @@ class Main(star.Star):
                 if await self._send(event, self._maybe_decorate(self._env_answer(env_kind)), event.unified_msg_origin):
                     self._stop(event)
                 return
+            if await self._image_studio_command(event, text):
+                self._stop(event)
+                return
             if self._wants_image_style(text):
                 await self._style_reply(event, text)
                 self._stop(event)
@@ -5850,7 +5939,13 @@ class Main(star.Star):
                 else:
                     reply = "我没找到你说的那个视频，再发我一次，或者把链接丢过来？"
 
-            if not img_url and not sticker:
+            reply, card_spec = self._take_card_marker(reply)
+            if card_spec and not img_data and not sticker:
+                card_data = await self._render_card(card_spec, text, reply, event)
+                if card_data:
+                    img_data = card_data
+                    img_url = None
+            if not img_url and not sticker and not img_data:
                 q = marker_img or (self._image_query(text) if self._wants_image_search(text) else "")
                 if q:
                     sticker = await self._pick_sticker(q)
@@ -5928,6 +6023,9 @@ class Main(star.Star):
         sender = event.get_sender_name() or "群友"
         img_url, img_data, sticker = None, None, None
         await self._ensure_title(uid, sender)
+        if await self._image_studio_command(event, text):
+            self._stop(event)
+            return
         if self._wants_image_style(text):
             await self._style_reply(event, text)
             self._stop(event)
@@ -6038,7 +6136,13 @@ class Main(star.Star):
             await self._send_report(event.unified_msg_origin, _rep, event)
             self._stop(event)
             return
-        if not img_url and not sticker:
+        reply, card_spec = self._take_card_marker(reply)
+        if card_spec and not img_data and not sticker:
+            card_data = await self._render_card(card_spec, text, reply, event)
+            if card_data:
+                img_data = card_data
+                img_url = None
+        if not img_url and not sticker and not img_data:
             q = marker_img or (self._image_query(text) if self._wants_image_search(text) else "")
             if q:
                 sticker = await self._pick_sticker(q)
@@ -6492,6 +6596,9 @@ class Main(star.Star):
         if env_kind:
             await self._send(event, self._maybe_decorate(self._env_answer(env_kind)), event.unified_msg_origin)
             return
+        if await self._image_studio_command(event, text):
+            self._stop(event)
+            return
         if self._wants_image_style(text):
             await self._style_reply(event, text)
             return
@@ -6542,7 +6649,13 @@ class Main(star.Star):
             music_q = _mm.group(1).strip()
             reply = MUSIC_MARK_RE.sub("", reply).strip()
         reply, marker_img, marker_search = self._extract_markers(reply)
-        if not img_url and not sticker:
+        reply, card_spec = self._take_card_marker(reply)
+        if card_spec and not img_data and not sticker:
+            card_data = await self._render_card(card_spec, text, reply, event)
+            if card_data:
+                img_data = card_data
+                img_url = None
+        if not img_url and not sticker and not img_data:
             q = marker_img or (self._image_query(text) if self._wants_image_search(text) else "")
             if q:
                 sticker = await self._pick_sticker(q)
