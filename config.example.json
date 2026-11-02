@@ -269,6 +269,10 @@
     "动物行为",
     "气候变化与海洋"
   ],
-  "world_max_pages": 3,
-  "world_max_facts": 5
+  "world_max_pages": 5,
+  "world_max_facts": 8,
+  "world_max_tokens": 6000,
+  "world_doc_chars": 5000,
+  "world_daily_topics": 2,
+  "world_daily_token_budget": 300000
 }

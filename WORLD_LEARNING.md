@@ -119,11 +119,13 @@
 
 主题和命令之间要留空格或冒号；`学习好累` 这类日常话不会误触发。
 
-- 搜索：Bing HTML → Bing RSS 兜底
+- 搜索：主题 + 主题科普两路并行，合并去重；Bing HTML → Bing RSS 兜底
 - 排序：优先 Wikipedia / Greenpeace / BBC / Nature / NOAA 等可读域名，降低百度/知乎等易 403 源权重
-- 读取：最多 5 篇，取成功正文 3 篇
+- 读取：先取最多 10 个候选，按可读度排序后保留 5 篇正文；单篇最多 5000 字
 - 主题池：默认「鲸鱼与海洋生物 / 深海生态 / 人工智能 / 大语言模型 / 太空探索 / 动物行为 / 气候变化与海洋」，可在 `world_topics` 自定义
-- 提炼：3–4 条事实，模型返回资料编号，代码映射为真实 URL；每条都带来源
+- 提炼：3–8 条事实，模型返回资料编号，代码映射为真实 URL；每条都带来源
 - 质量过滤：丢弃网站介绍、下载站、营销话术、广告和没有来源的内容
 - 存储：`data/world/facts.json`，带 topic/source/confidence/seen_at
-- 每日：默认 10:30，自动选一个主题，私聊主人摘要；失败最多重试 3 次，每次间隔 20 分钟
+- 每日：默认 10:30，每天最多 2 个主题；失败最多重试 3 次，每次间隔 20 分钟
+- 预算：每次输出最多 6000 token，每日最多 300000 token；预算内可以连续学多个主题
+- 配置：`world_max_pages` / `world_max_facts` / `world_max_tokens` / `world_doc_chars` / `world_daily_topics` / `world_daily_token_budget`

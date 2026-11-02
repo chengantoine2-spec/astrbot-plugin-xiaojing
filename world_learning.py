@@ -42,12 +42,12 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", "", str(text or "")).lower()[:200]
 
 
-def add_facts(topic: str, facts: list[dict]) -> list[dict]:
+def add_facts(topic: str, facts: list[dict], limit: int = 8) -> list[dict]:
     data = _load()
     existing = {_norm(x.get("fact")) for x in data["facts"]}
     added = []
     now = int(time.time())
-    for item in facts[:6]:
+    for item in facts[: max(1, min(12, int(limit)))]:
         if not isinstance(item, dict):
             continue
         fact = re.sub(r"\s+", " ", str(item.get("fact") or "")).strip()

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.4 - 2026-11-02
+
+- 世界学习大预算：5 篇正文、8 条事实、6000 输出 token；每日 2 个主题、30 万 token 上限
+- 每日学习按预算连续多主题，记录 token 用量并保留失败重试
+- 视频笔记：保存摘要、时间戳要点、来源；命令 视频笔记 / 忘记视频
+- 视频要点自动写入世界记忆；关键帧描述改为并行 worker
+- 编排器新增 TaskSpec / Plan / Aggregator；多图对比与视频帧走计划汇总
+- 文档：VIDEO_LEARNING.md，更新 WORLD_LEARNING.md / ORCHESTRATION.md
+
 ## 1.3.3 - 2026-11-02
 
 - 世界学习 P1：公开网页搜索、可读域名排序、Bing RSS 兜底、正文提取

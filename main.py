@@ -77,6 +77,11 @@ except Exception:
     from video_reader import VideoResult, extract_bvid, format_timestamp, is_bilibili, process_video
 
 try:
+    from . import video_notes
+except Exception:
+    import video_notes
+
+try:
     from . import image_tools
 except Exception:
     import image_tools
@@ -97,9 +102,9 @@ except Exception:
     import voice_tools
 
 try:
-    from .task_orchestrator import TaskOrchestrator
+    from .task_orchestrator import Aggregator, TaskOrchestrator, TaskSpec
 except Exception:
-    from task_orchestrator import TaskOrchestrator
+    from task_orchestrator import Aggregator, TaskOrchestrator, TaskSpec
 
 try:
     from . import self_editor
@@ -147,7 +152,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.3"
+BUILD = "1.3.4"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -254,8 +259,12 @@ DEFAULTS = {
         "动物行为",
         "气候变化与海洋",
     ],
-    "world_max_pages": 3,
-    "world_max_facts": 5,
+    "world_max_pages": 5,
+    "world_max_facts": 8,
+    "world_max_tokens": 6000,
+    "world_doc_chars": 5000,
+    "world_daily_topics": 2,
+    "world_daily_token_budget": 300000,
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -791,10 +800,12 @@ class Main(star.Star):
             logger.warning(f"[小鲸] 模型调用失败: {e}")
             return ""
 
-    def _world_topic(self) -> str:
+    def _world_topic(self, exclude: list[str] | None = None) -> str:
+        skip = {str(x).strip() for x in (exclude or []) if str(x).strip()}
         topics = [str(x).strip() for x in (self.cfg.get("world_topics") or []) if str(x).strip()]
-        if topics:
-            return random.choice(topics)
+        pool = [x for x in topics if x not in skip] or topics
+        if pool:
+            return random.choice(pool)
         chatter = {
             "壁纸", "表情包", "图", "图片", "视频", "剪辑", "渲染", "代码", "bug",
             "报错", "好可爱", "可爱", "累", "难过", "开心", "为什么", "怎么",
@@ -802,7 +813,8 @@ class Main(star.Star):
         }
         keys = [str(k).strip() for k in (self.cfg.get("interest_keywords") or {}).keys()
                 if str(k).strip() and str(k).strip() not in chatter]
-        return random.choice(keys) if keys else "深海生物"
+        pool = [x for x in keys if x not in skip] or keys
+        return random.choice(pool) if pool else "深海生物"
 
     @staticmethod
     def _world_rank_results(results: list[dict]) -> list[dict]:
@@ -845,24 +857,56 @@ class Main(star.Star):
         topic = re.sub(r"\s+", " ", str(topic or "")).strip()[:60]
         if not topic:
             return {"ok": False, "error": "没有主题"}
-        results = await self._search_web(topic)
+        queries = [topic]
+        if len(topic) <= 40 and "科普" not in topic:
+            queries.append(f"{topic} 科普")
+        search_tasks = await self._task_orchestrator().gather(
+            [(f"search:{i}", lambda q=q: self._search_web(q)) for i, q in enumerate(queries)],
+            timeout=45,
+        )
+        results = []
+        seen_urls = set()
+        for tr in search_tasks:
+            if not tr.ok or not isinstance(tr.data, list):
+                continue
+            for r in tr.data:
+                if not isinstance(r, dict):
+                    continue
+                u = str(r.get("url") or "").strip()
+                if not u or u in seen_urls:
+                    continue
+                seen_urls.add(u)
+                results.append(r)
         if not results:
             return {"ok": False, "topic": topic, "error": "搜索没有结果"}
+        logger.info(f"[小鲸] 世界研究「{topic}」搜索 {len(results)} 条候选")
         try:
-            max_pages = max(1, min(3, int(self.cfg.get("world_max_pages", 3))))
+            max_pages = max(1, min(8, int(self.cfg.get("world_max_pages", 5))))
         except Exception:
-            max_pages = 3
-        picked = self._world_rank_results(results)[:min(5, max(3, max_pages + 1))]
+            max_pages = 5
+        try:
+            max_facts = max(1, min(12, int(self.cfg.get("world_max_facts", 8))))
+        except Exception:
+            max_facts = 8
+        try:
+            max_tokens = max(2000, min(16000, int(self.cfg.get("world_max_tokens", 6000))))
+        except Exception:
+            max_tokens = 6000
+        try:
+            doc_chars = max(1200, min(12000, int(self.cfg.get("world_doc_chars", 5000))))
+        except Exception:
+            doc_chars = 5000
+        picked = self._world_rank_results(results)[:min(10, max(3, max_pages + 2))]
         task_results = await self._task_orchestrator().gather([
             (f"read:{i}", lambda u=r.get("url", ""): self._read_page(u, timeout=15))
             for i, r in enumerate(picked)
-        ], timeout=30)
+        ], timeout=45)
         docs = []
         for item, tr in zip(picked, task_results):
             page = tr.data if tr.ok and isinstance(tr.data, dict) else {}
             if not page.get("ok"):
                 continue
-            body = self._format_page(page)[:3000]
+            body = self._format_page(page)[:doc_chars]
             docs.append({
                 "url": page.get("url") or item.get("url", ""),
                 "title": page.get("title") or item.get("title", ""),
@@ -880,18 +924,20 @@ class Main(star.Star):
             + "\n\n".join(ctx) + "\n\n"
             "只输出 JSON：{\"summary\":\"一句话总结\",\"facts\":[{\"fact\":\"一条事实\","
             "\"doc\":1,\"confidence\":0.0}]}。\n"
-            "要求：3-4 条事实；每条不超过 80 字，必须能在对应资料正文中找到；"
-            "doc 必须是上面的资料编号（1-" + str(len(docs)) + "）；summary 不超过 60 字；"
-            "只写关于主题本身的知识（生物习性、科学发现、技术原理、事件）；"
+            "要求：3-8 条事实；每条不超过 100 字，必须能在对应资料正文中找到；"
+            "doc 必须是上面的资料编号（1-" + str(len(docs)) + "）；summary 不超过 100 字；"
+            "只写关于主题本身的知识（生物习性、科学发现、技术原理、事件、数据）；"
             "不要记录网站/App/下载站介绍、营销话术、广告或「某网站提供什么」；"
             "不要编造，不确定就降低 confidence 或不写。"
         )
-        data = await self._chat_json(prompt, max_tokens=2400, kind="world", timeout=75)
+        usage: dict = {}
+        data = await self._chat_json(prompt, max_tokens=max_tokens, kind="world",
+                                     timeout=120, usage_out=usage)
         facts = data.get("facts") if isinstance(data.get("facts"), list) else []
         logger.info(f"[小鲸] 世界研究「{topic}」读到 {len(docs)} 篇，模型返回 {len(facts)} 条")
         allowed = {d["url"]: d["title"] for d in docs}
         valid = []
-        for f in facts[: int(self.cfg.get("world_max_facts", 5))]:
+        for f in facts[:max_facts]:
             if not isinstance(f, dict):
                 continue
             fact = re.sub(r"\s+", " ", str(f.get("fact") or "")).strip()
@@ -923,12 +969,13 @@ class Main(star.Star):
                 conf = 0.5
             valid.append({"fact": fact, "source": matched,
                           "title": allowed[matched], "confidence": conf})
-        added = world_learning.add_facts(topic, valid)
+        added = world_learning.add_facts(topic, valid, limit=max_facts)
         summary = str(data.get("summary") or "").strip()
         if not summary:
             summary = f"看了 {len(docs)} 篇资料，记下 {len(added)} 条。"
         return {"ok": bool(added), "topic": topic, "summary": summary,
-                "facts": added, "docs": docs, "error": "" if added else "没有通过校验的事实"}
+                "facts": added, "docs": docs, "usage": usage,
+                "error": "" if added else "没有通过校验的事实"}
 
     async def _world_learn_command(self, event, text: str) -> bool:
         t = re.sub(r"^(小鲸鱼?|小鲸)", "", (text or "").strip()).strip()
@@ -952,10 +999,10 @@ class Main(star.Star):
             )
             return True
         lines = [f"我查了「{topic}」：{res.get('summary')}"]
-        for f in (res.get("facts") or [])[:5]:
+        for f in (res.get("facts") or [])[:8]:
             lines.append(f"- {f.get('fact')}\n  来源：{f.get('source')}")
         lines.append(f"记到世界记忆了，这次 {len(res.get('facts') or [])} 条。")
-        await self._send_chat(event, "\n".join(lines)[:1600], None, None, None)
+        await self._send_chat(event, "\n".join(lines)[:2000], None, None, None)
         return True
 
     async def _world_loop(self):
@@ -973,41 +1020,76 @@ class Main(star.Star):
                 if hm < target:
                     continue
                 state = world_learning.load_state()
-                if state.get("last_day") == day:
+                daily_topics = max(1, min(5, int(self.cfg.get("world_daily_topics", 2) or 2)))
+                done = state.get("day_done") if state.get("day_done_day") == day else []
+                if not isinstance(done, list):
+                    done = []
+                done = [str(x) for x in done if str(x).strip()]
+                if state.get("last_day") == day and not done:
+                    done = [str(state.get("last_topic") or "今天已学")]
+                if state.get("last_day") == day and len(done) >= daily_topics:
                     continue
                 attempts = int(state.get("attempts") or 0) if state.get("attempt_day") == day else 0
                 if attempts >= 3:
                     continue
                 if float(state.get("next_try") or 0) > time.time():
                     continue
-                topic = self._world_topic()
+                daily_budget = max(10000, int(self.cfg.get("world_daily_token_budget", 300000) or 300000))
+                used = int(state.get("day_tokens") or 0) if state.get("token_day") == day else 0
+                if used >= daily_budget:
+                    state.update({"last_day": day, "last_error": "daily token budget reached",
+                                  "last_ts": int(time.time())})
+                    world_learning.save_state(state)
+                    logger.info(f"[小鲸] 世界学习今日 token 预算已用完：{used}/{daily_budget}")
+                    continue
+                topic = self._world_topic(exclude=done)
                 res = await self._world_research(topic, None)
                 ok = bool(res.get("ok"))
+                usage = res.get("usage") or {}
+                used += int(usage.get("prompt") or 0) + int(usage.get("completion") or 0)
                 logger.info(
                     f"[小鲸] 世界学习「{topic}」ok={ok} facts={len(res.get('facts') or [])} "
-                    f"err={res.get('error') or '-'}"
+                    f"tokens={int(usage.get('prompt') or 0)+int(usage.get('completion') or 0)} "
+                    f"used={used}/{daily_budget} err={res.get('error') or '-'}"
                 )
                 if ok:
-                    state.update({"last_day": day, "last_topic": topic, "last_ok": True,
-                                  "attempt_day": day, "attempts": attempts + 1,
+                    if topic not in done:
+                        done.append(topic)
+                    state.update({"day_done": done, "day_done_day": day,
+                                  "token_day": day, "day_tokens": used,
+                                  "last_topic": topic, "last_ok": True,
+                                  "attempt_day": day, "attempts": 0,
                                   "last_ts": int(time.time())})
-                    state.pop("next_try", None)
+                    if len(done) >= daily_topics:
+                        state["last_day"] = day
+                        state.pop("next_try", None)
+                    else:
+                        state["next_try"] = int(time.time() + 600)
                 else:
-                    state.update({"attempt_day": day, "attempts": attempts + 1,
-                                  "next_try": int(time.time() + 1200),
+                    state.update({"day_done": done, "day_done_day": day,
+                                  "token_day": day, "day_tokens": used,
+                                  "attempt_day": day, "attempts": attempts + 1,
                                   "last_topic": topic, "last_ok": False,
                                   "last_error": str(res.get("error") or "")[:200],
                                   "last_ts": int(time.time())})
+                    if attempts + 1 >= 3:
+                        state["last_day"] = day
+                        state.pop("next_try", None)
+                    else:
+                        state["next_try"] = int(time.time() + 1200)
                 world_learning.save_state(state)
                 if ok:
                     owner = str((self.cfg.get("owner_ids") or [""])[0])
                     if owner:
                         umo = f"napcat:FriendMessage:{owner}"
                         lines = [f"今天学了「{topic}」：{res.get('summary')}"]
-                        for f in (res.get("facts") or [])[:4]:
+                        for f in (res.get("facts") or [])[:6]:
                             lines.append(f"- {f.get('fact')}")
-                        lines.append("都记在世界记忆里了。")
-                        await self._send(None, MessageChain(chain=[Plain(text="\n".join(lines)[:1200])]), umo)
+                        lines.append(
+                            f"读了 {len(res.get('docs') or [])} 篇，记下 {len(res.get('facts') or [])} 条，"
+                            f"世界记忆共 {len(world_learning.list_facts(1000))} 条。"
+                        )
+                        await self._send(None, MessageChain(chain=[Plain(text="\n".join(lines)[:1600])]), umo)
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -1298,6 +1380,14 @@ class Main(star.Star):
             self._facts_save()
             self._people_touch(uid, event.get_sender_name() or "", note=content)
             await self._reply(event, "记住了。")
+            return True
+        if core in ("视频笔记", "看过的视频"):
+            await self._reply(event, video_notes.format_notes(10)[:1800])
+            return True
+        if core.startswith("忘记视频"):
+            key = re.sub(r"^忘记视频", "", core).strip(" ：:，,。")
+            n = video_notes.remove_notes(key) if key else 0
+            await self._reply(event, f"忘了 {n} 条视频笔记。")
             return True
         if re.match(r"^(?:小鲸鱼?|小鲸)?[\s，,]*?(?:看|解析|总结)?视频", t):
             src, local = await self._resolve_video_source(event, t)
@@ -5396,7 +5486,7 @@ class Main(star.Star):
 
     # ---------------- 模型判断 ----------------
     async def _chat_json(self, prompt: str, max_tokens: int | None = None, kind: str = "judge",
-                         timeout: float = 20.0) -> dict:
+                         timeout: float = 20.0, usage_out: dict | None = None) -> dict:
         key = self._vision_key()
         if not key:
             return {}
@@ -5435,6 +5525,9 @@ class Main(star.Star):
                             p_tok, c_tok, ucost = self._usage_from(j)
                             logger.info(f"[小鲸] 用量 {kind} in={p_tok} out={c_tok} cost={ucost}")
                             self._record_usage(kind, str(self.cfg.get("judge_model", "glm-5.3-flash")), p_tok, c_tok, ucost)
+                            if usage_out is not None:
+                                usage_out.update(prompt=p_tok, completion=c_tok,
+                                                 cost=float(ucost or 0.0))
                             text = (j["choices"][0]["message"].get("content") or "").strip()
                 if text:
                     break
@@ -6464,15 +6557,24 @@ class Main(star.Star):
                 event.unified_msg_origin,
             )
             return True
-        results = await self._task_orchestrator().gather([
-            ("vision_compare", lambda: self._vision_compare(imgs[:2], t)),
-            ("compare_image", lambda: asyncio.to_thread(image_edit.compare_images, imgs[0], imgs[1])),
-        ], timeout=40)
-        vres = next((r for r in results if r.kind == "vision_compare" and r.ok), None)
-        cres = next((r for r in results if r.kind == "compare_image" and r.ok), None)
-        res = vres.data if vres and isinstance(vres.data, dict) else {}
-        data = cres.data if cres else None
-        for r in results:
+        plan = await self._task_orchestrator().run_plan(
+            "image_compare",
+            [
+                TaskSpec("vision_compare", lambda: self._vision_compare(imgs[:2], t), timeout=40),
+                TaskSpec("compare_image",
+                         lambda: asyncio.to_thread(image_edit.compare_images, imgs[0], imgs[1]),
+                         timeout=40),
+            ],
+            aggregate=lambda rs: {
+                "vision": Aggregator.first_ok(rs, {"vision_compare"}),
+                "image": Aggregator.first_ok(rs, {"compare_image"}),
+            },
+            timeout=40,
+        )
+        vision = plan.data.get("vision") if isinstance(plan.data, dict) else None
+        res = vision if isinstance(vision, dict) else {}
+        data = plan.data.get("image") if isinstance(plan.data, dict) else None
+        for r in plan.results:
             if not r.ok:
                 logger.info(f"[小鲸] 对比任务失败 {r.kind}: {r.error}")
         summary = str(res.get("summary") or "两张图各有特点。")
@@ -6788,6 +6890,7 @@ class Main(star.Star):
     async def _summarize_video(self, res: VideoResult, text: str, umo: str | None) -> str:
         frame_notes = []
         frames = res.frames or []
+        frame_tasks = []
         for i in range(0, len(frames), 3):
             batch = frames[i:i + 3]
             blobs = []
@@ -6798,13 +6901,27 @@ class Main(star.Star):
                     continue
             if not blobs:
                 continue
-            desc = await self._vision_multi(
-                blobs,
-                f"这是视频《{res.title}》的关键帧（第 {i+1}-{i+len(blobs)} 张，按时间顺序）。"
-                "用中文逐帧描述：画面主体、人物动作、场景、屏幕上的关键文字；每帧一两句，不要编造。",
+            frame_tasks.append(TaskSpec(
+                kind=f"frames:{i}",
+                factory=lambda b=blobs, idx=i: self._vision_multi(
+                    b,
+                    f"这是视频《{res.title}》的关键帧（第 {idx+1}-{idx+len(b)} 张，按时间顺序）。"
+                    "用中文逐帧描述：画面主体、人物动作、场景、屏幕上的关键文字；每帧一两句，不要编造。",
+                ),
+                timeout=120,
+            ))
+        if frame_tasks:
+            plan = await self._task_orchestrator().run_plan(
+                "video_frames",
+                frame_tasks,
+                aggregate=lambda rs: Aggregator.collect(rs),
+                timeout=120,
             )
-            if desc:
-                frame_notes.append(desc)
+            for note in (plan.data or []):
+                frame_notes.append(str(note))
+            for r in plan.results:
+                if not r.ok:
+                    logger.info(f"[小鲸] 视频关键帧任务失败 {r.kind}: {r.error}")
         transcript = self._video_lines(res)
         duration = int(res.duration or 0)
         link_line = f"原链接：{res.source}\n" if str(res.source or "").startswith("http") else ""
@@ -6864,6 +6981,18 @@ class Main(star.Star):
         summary = await self._summarize_video(res, text, umo)
         if res.platform == "bilibili" and res.source and "http" not in (summary or ""):
             summary = (summary + "\n" + res.source).strip()
+        try:
+            note = video_notes.save(res, summary)
+            facts = (video_notes.facts_from_summary(summary, res.source, res.title)
+                     if str(res.source or "").startswith("http") else [])
+            if facts:
+                world_learning.add_facts(f"视频：{res.title}"[:80], facts, limit=len(facts))
+            logger.info(
+                f"[小鲸] 视频笔记已保存：《{note.get('title', '')[:40]}》，"
+                f"要点 {len(note.get('points') or [])} 条，世界事实 {len(facts)} 条"
+            )
+        except Exception as e:
+            logger.info(f"[小鲸] 视频笔记保存失败：{e}")
         return summary
 
     # ---------------- 自我迭代 ----------------
