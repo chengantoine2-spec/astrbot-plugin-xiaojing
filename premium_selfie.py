@@ -55,6 +55,10 @@ def render_premium_selfie(activity: str, mood: str, asset_path: str | Path,
     im = Image.alpha_composite(im, overlay)
     d = ImageDraw.Draw(im)
 
+    # 顶部信息底衬，保证浅色场景也能读清
+    d.rounded_rectangle([34, 24, 330, 108], radius=16, fill=(8, 12, 24, 150))
+    d.rounded_rectangle([W - 132, 26, W - 34, 82], radius=14, fill=(8, 12, 24, 140))
+
     # 顶部信息
     d.text((48, 34), "小鲸的房间", font=_font(30, True), fill=(242, 246, 255))
     d.text((48, 76), "SELFIE", font=_font(17, True), fill=(150, 200, 255))

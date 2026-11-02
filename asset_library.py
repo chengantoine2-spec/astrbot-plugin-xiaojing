@@ -31,12 +31,21 @@ def assets(kind: str = "") -> list[dict]:
     return [a for a in items if isinstance(a, dict)]
 
 
-def pick(activity: str = "", kind: str = "", mood: str = "", rng=None) -> dict | None:
-    """按标签给素材打分；同分随机，避免每次都同一张。"""
+def pick(activity: str = "", kind: str = "", mood: str = "", form: str = "",
+         rng=None) -> dict | None:
+    """按形象/标签给素材打分；同分随机，避免每次都同一张。
+
+    form="q" 默认优先 Q 版；form="mature" 时硬过滤到成熟版，尊重明确要求。
+    """
     items = assets(kind)
     if not kind:
         # 默认不拿三视图当自拍素材
         items = [a for a in items if str(a.get("type") or "") != "sheet"]
+    form = str(form or "").lower()
+    if form == "mature":
+        mature = [a for a in items if str(a.get("form") or "") == "mature"]
+        if mature:
+            items = mature
     if not items:
         return None
     act = str(activity or "")
@@ -47,6 +56,8 @@ def pick(activity: str = "", kind: str = "", mood: str = "", rng=None) -> dict |
         tags = [str(t) for t in (item.get("tags") or [])]
         preferred = [str(x) for x in (item.get("preferred") or [])]
         score = 0
+        if form and str(item.get("form") or "") == form:
+            score += 6
         if act and act in preferred:
             score += 20
         if act and act in tags:

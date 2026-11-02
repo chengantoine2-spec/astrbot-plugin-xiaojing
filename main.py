@@ -180,7 +180,8 @@ DEFAULTS = {
     "page_shot_cache_seconds": 1800,
     "home_enabled": True,
     "home_selfie_cooldown_seconds": 300,
-    "home_selfie_style": "pixel",
+    "home_selfie_style": "premium",
+    "home_selfie_form": "q",
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -637,7 +638,17 @@ class Main(star.Star):
                 self._reply(event, cap)
             return True
         if core in ("精致自拍", "精美自拍", "高质量自拍"):
-            cap = await self._send_selfie(event, force=True, style="premium")
+            cap = await self._send_selfie(event, force=True, style="premium", form="q")
+            if cap:
+                self._reply(event, cap)
+            return True
+        if core in ("Q版自拍", "q版自拍", "Q版形象自拍"):
+            cap = await self._send_selfie(event, force=True, style="premium", form="q")
+            if cap:
+                self._reply(event, cap)
+            return True
+        if core in ("成熟自拍", "成熟形象自拍"):
+            cap = await self._send_selfie(event, force=True, style="premium", form="mature")
             if cap:
                 self._reply(event, cap)
             return True
@@ -648,8 +659,21 @@ class Main(star.Star):
             return True
         if core in ("默认精致自拍", "以后都用精致自拍"):
             self.cfg["home_selfie_style"] = "premium"
+            self.cfg["home_selfie_form"] = "q"
             self._save_cfg()
-            self._reply(event, "好，以后默认用精致自拍。")
+            self._reply(event, "好，以后默认用精致自拍（Q 版形象）。")
+            return True
+        if core in ("默认Q版形象", "默认q版形象", "以后都用Q版形象"):
+            self.cfg["home_selfie_style"] = "premium"
+            self.cfg["home_selfie_form"] = "q"
+            self._save_cfg()
+            self._reply(event, "好，以后默认用 Q 版形象。")
+            return True
+        if core in ("默认成熟形象", "以后都用成熟形象"):
+            self.cfg["home_selfie_style"] = "premium"
+            self.cfg["home_selfie_form"] = "mature"
+            self._save_cfg()
+            self._reply(event, "好，以后默认用成熟比例形象。")
             return True
         if core in ("默认像素自拍", "以后都用像素自拍"):
             self.cfg["home_selfie_style"] = "pixel"
@@ -4610,16 +4634,19 @@ class Main(star.Star):
             text += " 有点没精神……"
         return text
 
-    async def _render_selfie(self, force: bool = False,
-                             style: str | None = None) -> tuple[Path, str, str]:
+    async def _render_selfie(self, force: bool = False, style: str | None = None,
+                             form: str | None = None) -> tuple[Path, str, str]:
         st = self._pick_activity(force=False)
         activity = str(st.get("activity") or "发呆")
         mood = str(st.get("mood") or "平静")
         energy = int(st.get("energy") or 70)
         caption = self._selfie_caption(activity, mood)
-        style = str(style or self.cfg.get("home_selfie_style") or "pixel").lower()
+        style = str(style or self.cfg.get("home_selfie_style") or "premium").lower()
         if style not in ("pixel", "premium"):
-            style = "pixel"
+            style = "premium"
+        form = str(form or self.cfg.get("home_selfie_form") or "q").lower()
+        if form not in ("q", "mature"):
+            form = "q"
         cooldown = max(0, int(self.cfg.get("home_selfie_cooldown_seconds", 300)))
         last = st.get("last_selfie") or {}
         last_raw = str(last.get("path") or "")
@@ -4627,6 +4654,7 @@ class Main(star.Star):
         try:
             if (not force and last.get("activity") == activity
                     and str(last.get("style") or "") == style
+                    and str(last.get("form") or "") == form
                     and last_path and last_path.exists()
                     and time.time() - float(last.get("ts") or 0) < cooldown):
                 return last_path, activity, caption
@@ -4637,15 +4665,16 @@ class Main(star.Star):
         rendered = False
         if style == "premium":
             try:
-                item = asset_library.pick(activity, mood=mood)
+                item = asset_library.pick(activity, mood=mood, form=form)
                 asset_path = asset_library.resolve(item)
                 if asset_path:
+                    form = str(item.get("form") or form)
                     await asyncio.to_thread(
                         render_premium_selfie, activity, mood,
                         str(asset_path), str(out), stamp,
                     )
                     rendered = True
-                    logger.info(f"[小鲸] 精致自拍素材：{item.get('id')}（{activity}）")
+                    logger.info(f"[小鲸] 精致自拍素材：{item.get('id')}（{activity}/{form}）")
             except Exception as e:
                 logger.warning(f"[小鲸] 精致自拍失败，回退像素：{e}")
         if not rendered:
@@ -4656,7 +4685,7 @@ class Main(star.Star):
                 str(portrait) if portrait.exists() else None, str(out), stamp, "pixel",
             )
         st["last_selfie"] = {"ts": time.time(), "path": str(out),
-                             "activity": activity, "style": style}
+                             "activity": activity, "style": style, "form": form}
         self._save_home(st)
         self._prune_selfies()
         return out, activity, caption
@@ -4672,8 +4701,10 @@ class Main(star.Star):
             pass
 
     async def _send_selfie(self, event, force: bool = False,
-                           style: str | None = None) -> str:
-        fp, activity, caption = await self._render_selfie(force=force, style=style)
+                           style: str | None = None, form: str | None = None) -> str:
+        fp, activity, caption = await self._render_selfie(
+            force=force, style=style, form=form,
+        )
         umo = getattr(event, "unified_msg_origin", None)
         ok = await self._send(event, MessageChain(chain=[Image(file=str(fp))]), umo)
         if not ok:
