@@ -254,5 +254,7 @@
   "tts_api_voice": "Vivian",
   "tts_language": "Chinese",
   "tts_instruct": "",
-  "tts_fallback_sapi": true
+  "tts_fallback_sapi": true,
+  "reply_max_bubbles": 2,
+  "reply_split_chance": 0.35
 }
