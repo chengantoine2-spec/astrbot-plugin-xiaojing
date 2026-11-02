@@ -152,7 +152,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.4"
+BUILD = "1.3.5"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -260,7 +260,7 @@ DEFAULTS = {
         "气候变化与海洋",
     ],
     "world_max_pages": 5,
-    "world_max_facts": 8,
+    "world_max_facts": 12,
     "world_max_tokens": 6000,
     "world_doc_chars": 5000,
     "world_daily_topics": 2,
@@ -885,9 +885,9 @@ class Main(star.Star):
         except Exception:
             max_pages = 5
         try:
-            max_facts = max(1, min(12, int(self.cfg.get("world_max_facts", 8))))
+            max_facts = max(1, min(16, int(self.cfg.get("world_max_facts", 12))))
         except Exception:
-            max_facts = 8
+            max_facts = 12
         try:
             max_tokens = max(2000, min(16000, int(self.cfg.get("world_max_tokens", 6000))))
         except Exception:
@@ -924,8 +924,8 @@ class Main(star.Star):
             + "\n\n".join(ctx) + "\n\n"
             "只输出 JSON：{\"summary\":\"一句话总结\",\"facts\":[{\"fact\":\"一条事实\","
             "\"doc\":1,\"confidence\":0.0}]}。\n"
-            "要求：3-8 条事实；每条不超过 100 字，必须能在对应资料正文中找到；"
-            "doc 必须是上面的资料编号（1-" + str(len(docs)) + "）；summary 不超过 100 字；"
+            "要求：5-12 条事实；每条不超过 100 字，必须能在对应资料正文中找到；"
+            "doc 必须是上面的资料编号（1-" + str(len(docs)) + "）；summary 120-200 字；"
             "只写关于主题本身的知识（生物习性、科学发现、技术原理、事件、数据）；"
             "不要记录网站/App/下载站介绍、营销话术、广告或「某网站提供什么」；"
             "不要编造，不确定就降低 confidence 或不写。"
@@ -973,8 +973,9 @@ class Main(star.Star):
         summary = str(data.get("summary") or "").strip()
         if not summary:
             summary = f"看了 {len(docs)} 篇资料，记下 {len(added)} 条。"
+        note = world_learning.add_note(topic, summary, valid, docs, usage)
         return {"ok": bool(added), "topic": topic, "summary": summary,
-                "facts": added, "docs": docs, "usage": usage,
+                "facts": added, "docs": docs, "usage": usage, "note": note,
                 "error": "" if added else "没有通过校验的事实"}
 
     async def _world_learn_command(self, event, text: str) -> bool:
@@ -999,10 +1000,10 @@ class Main(star.Star):
             )
             return True
         lines = [f"我查了「{topic}」：{res.get('summary')}"]
-        for f in (res.get("facts") or [])[:8]:
+        for f in (res.get("facts") or [])[:12]:
             lines.append(f"- {f.get('fact')}\n  来源：{f.get('source')}")
         lines.append(f"记到世界记忆了，这次 {len(res.get('facts') or [])} 条。")
-        await self._send_chat(event, "\n".join(lines)[:2000], None, None, None)
+        await self._send_chat(event, "\n".join(lines)[:2600], None, None, None)
         return True
 
     async def _world_loop(self):
@@ -1083,13 +1084,14 @@ class Main(star.Star):
                     if owner:
                         umo = f"napcat:FriendMessage:{owner}"
                         lines = [f"今天学了「{topic}」：{res.get('summary')}"]
-                        for f in (res.get("facts") or [])[:6]:
+                        for f in (res.get("facts") or [])[:8]:
                             lines.append(f"- {f.get('fact')}")
                         lines.append(
                             f"读了 {len(res.get('docs') or [])} 篇，记下 {len(res.get('facts') or [])} 条，"
                             f"世界记忆共 {len(world_learning.list_facts(1000))} 条。"
                         )
-                        await self._send(None, MessageChain(chain=[Plain(text="\n".join(lines)[:1600])]), umo)
+                        lines.append(f"完整笔记：世界笔记 {topic}")
+                        await self._send(None, MessageChain(chain=[Plain(text="\n".join(lines)[:1900])]), umo)
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -1196,6 +1198,18 @@ class Main(star.Star):
         if core.startswith(("学习", "研究", "看世界")):
             if await self._world_learn_command(event, core):
                 return True
+        if core in ("世界笔记", "学习笔记"):
+            await self._reply(event, world_learning.format_notes(10)[:1800])
+            return True
+        m = re.match(r"^(?:世界笔记|学习笔记)[\s：:，,]+(.+)$", core)
+        if m:
+            await self._reply_long(event, world_learning.format_note(m.group(1).strip())[:5200])
+            return True
+        if core.startswith("忘记笔记"):
+            key = re.sub(r"^忘记笔记", "", core).strip(" ：:，,。")
+            n = world_learning.remove_notes(key) if key else 0
+            await self._reply(event, f"忘了 {n} 个主题的学习笔记。")
+            return True
         if core in ("世界记忆", "学到什么", "世界知识"):
             await self._reply(event, world_learning.format_facts(10)[:1500])
             return True
@@ -4821,6 +4835,29 @@ class Main(star.Star):
             asyncio.create_task(self._send(event, self._maybe_decorate(text), event.unified_msg_origin))
         except Exception:
             pass
+
+    async def _reply_long(self, event: AstrMessageEvent, text: str,
+                          limit: int = 1800, max_parts: int = 3) -> None:
+        """长笔记分段发送，优先在换行处切，避免单条消息被截断。"""
+        body = str(text or "").strip()
+        if not body:
+            return
+        parts = []
+        while body and len(parts) < max_parts:
+            if len(body) <= limit:
+                parts.append(body)
+                break
+            cut = body.rfind("\n", 0, limit)
+            if cut < limit // 2:
+                cut = limit
+            parts.append(body[:cut].strip())
+            body = body[cut:].strip()
+        for i, part in enumerate(parts):
+            if not part:
+                continue
+            await self._send(event, self._maybe_decorate(part), event.unified_msg_origin)
+            if i < len(parts) - 1:
+                await asyncio.sleep(0.4)
 
     # ---------------- 工具 ----------------
     @staticmethod
