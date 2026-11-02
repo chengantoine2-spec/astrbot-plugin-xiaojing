@@ -82,6 +82,11 @@ except Exception:
     import image_studio
 
 try:
+    from . import image_edit
+except Exception:
+    import image_edit
+
+try:
     from .netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
 except Exception:
     from netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
@@ -116,6 +121,7 @@ SELF_NOTES = DATA_DIR / "self_notes.md"
 CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
+PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
 MEM_DIR.mkdir(parents=True, exist_ok=True)
@@ -191,6 +197,10 @@ DEFAULTS = {
     "image_budget_per_10min": 4,
     "image_cooldown_seconds": 45,
     "image_dedupe_minutes": 30,
+    "proactive_daily_cap": 6,
+    "proactive_min_gap_minutes": 45,
+    "proactive_quiet_start": "23:00",
+    "proactive_quiet_end": "08:00",
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -1767,6 +1777,25 @@ class Main(star.Star):
         await self._send(event, self._maybe_decorate(txt), event.unified_msg_origin)
         logger.info(f"[小鲸] OCR：{len(txt)} 字")
         return True
+
+    async def _vision_compare(self, images: list[bytes], question: str = "") -> dict:
+        prompt = (
+            "你是图片对比助手。图1=A，图2=B。只输出 JSON："
+            '{"summary":"一句话结论","differences":[{"aspect":"方面","a":"A的情况","b":"B的情况"}],'
+            '"winner":"a|b|tie","reason":"一句话理由"}。'
+            "只比较看得见的内容，不要猜测。"
+            + (f"\n对方的问题：{question}" if question else "")
+        )
+        out = await self._vision_multi(images[:2], prompt, max_tokens=700)
+        m = re.search(r"\{.*\}", out or "", re.S)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        return {"summary": (out or "两张图各有特点。").strip()[:300]}
 
     async def _vision_multi(self, images: list[bytes], question: str, max_tokens: int | None = None) -> str:
         key = self._vision_key()
@@ -5424,6 +5453,52 @@ class Main(star.Star):
         pad = 0.03
         return [max(0, x1 - pad), max(0, y1 - pad), min(1, x2 + pad), min(1, y2 + pad)]
 
+    async def _event_images(self, event, limit: int = 4) -> list[bytes]:
+        """当前消息图 + 引用图 + 最近图，按顺序取最多 limit 张。"""
+        refs: list[str] = []
+        for comp in event.get_messages():
+            if comp.__class__.__name__ != "Image":
+                continue
+            ref = getattr(comp, "url", "") or ""
+            if not str(ref).startswith("http"):
+                try:
+                    ref = await comp.convert_to_file_path()
+                except Exception:
+                    ref = getattr(comp, "path", "") or getattr(comp, "file", "") or ""
+            if ref:
+                refs.append(str(ref))
+        q = await self._quoted_image(event)
+        if q:
+            refs.append(q)
+        key, skey = "", ""
+        try:
+            key = event.unified_msg_origin
+        except Exception:
+            pass
+        try:
+            skey = f"sender:{self._image_scope(event)}:{event.get_sender_id()}"
+        except Exception:
+            pass
+        for k in (key, skey):
+            if not k:
+                continue
+            for ref, _ts, _name in sorted(self._recent_images.get(k, []),
+                                          key=lambda x: x[1], reverse=True):
+                if ref:
+                    refs.append(str(ref))
+        out: list[bytes] = []
+        seen: set[str] = set()
+        for ref in refs:
+            if ref in seen:
+                continue
+            seen.add(ref)
+            data = await self._download(ref)
+            if data and len(data) <= 8 * 1024 * 1024:
+                out.append(data)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+
     async def _event_image_bytes(self, event) -> bytes | None:
         for comp in event.get_messages():
             if comp.__class__.__name__ != "Image":
@@ -5500,6 +5575,102 @@ class Main(star.Star):
         except Exception as e:
             logger.info(f"[小鲸] 定制图失败：{e}")
             return None
+
+    async def _image_compare_command(self, event, text: str) -> bool:
+        t = re.sub(r"^(小鲸鱼?|小鲸)[\s，,]*", "", (text or "").strip()).strip()
+        if not t or t.startswith(("对比卡", "对比图", "清单卡", "时间线")):
+            return False
+        keys = ("对比这两张", "比较这两张", "两张图", "哪张更好", "有什么区别",
+                "比一下这两张", "这两张")
+        if not any(k in t for k in keys):
+            return False
+        imgs = await self._event_images(event, limit=2)
+        if len(imgs) < 2:
+            await self._send(
+                event,
+                self._maybe_decorate("发两张图给我，我才好对比～"),
+                event.unified_msg_origin,
+            )
+            return True
+        res = await self._vision_compare(imgs[:2], t)
+        summary = str(res.get("summary") or "两张图各有特点。")
+        lines = [summary]
+        for item in (res.get("differences") or [])[:4]:
+            if isinstance(item, dict):
+                aspect = str(item.get("aspect") or "差异")
+                a = str(item.get("a") or "")
+                b = str(item.get("b") or "")
+                lines.append(f"- {aspect}：A {a}；B {b}")
+        winner = str(res.get("winner") or "").lower()
+        reason = str(res.get("reason") or "")
+        if winner == "a":
+            lines.append(f"更适合：A。{reason}")
+        elif winner == "b":
+            lines.append(f"更适合：B。{reason}")
+        try:
+            data = await asyncio.to_thread(image_edit.compare_images, imgs[0], imgs[1])
+        except Exception as e:
+            logger.info(f"[小鲸] 对比图生成失败：{e}")
+            data = None
+        await self._send_chat(event, "\n".join(lines)[:900], None, data, None,
+                              force_image=True)
+        self._feedback_sent("compare_images", event.unified_msg_origin)
+        return True
+
+    async def _image_edit_command(self, event, text: str) -> bool:
+        t = re.sub(r"^(小鲸鱼?|小鲸)[\s，,]*", "", (text or "").strip()).strip()
+        if not t:
+            return False
+        kind, arg = "", ""
+        if t.startswith("裁剪"):
+            kind, arg = "crop", t[2:].strip(" ：:，,。") or "1:1"
+        elif t.startswith(("局部模糊", "中间模糊", "左边模糊", "右边模糊",
+                           "上面模糊", "下面模糊")):
+            kind = "blur"
+            arg = t
+        elif t.startswith("滤镜"):
+            kind = "filter"
+            arg = t[2:].strip(" ：:，,。") or "warm"
+        elif t.startswith(("黑白", "暖色", "冷色", "模糊", "锐化", "复古", "高对比")):
+            kind = "filter"
+            arg = t
+        elif t.startswith("拼图"):
+            kind = "collage"
+        else:
+            return False
+        limit = 4 if kind == "collage" else 1
+        imgs = await self._event_images(event, limit=limit)
+        if not imgs:
+            await self._send(event, self._maybe_decorate("先发我一张图～"),
+                             event.unified_msg_origin)
+            return True
+        try:
+            if kind == "crop":
+                m = re.search(r"(\d+\s*[:：]\s*\d+)", arg)
+                aspect = (m.group(1).replace("：", ":") if m else "1:1")
+                data = await asyncio.to_thread(image_edit.crop, imgs[0], aspect)
+                caption = f"裁成 {aspect} 了～"
+            elif kind == "blur":
+                data = await asyncio.to_thread(image_edit.blur_region, imgs[0], arg)
+                caption = "这块我模糊掉了～"
+            elif kind == "collage":
+                if len(imgs) < 2:
+                    await self._send(event, self._maybe_decorate("拼图至少要两张图～"),
+                                     event.unified_msg_origin)
+                    return True
+                data = await asyncio.to_thread(image_edit.collage, imgs[:4])
+                caption = "拼好了～"
+            else:
+                data = await asyncio.to_thread(image_edit.filter_image, imgs[0], arg)
+                caption = "滤镜加好了～"
+        except Exception as e:
+            logger.info(f"[小鲸] 改图失败：{e}")
+            await self._send(event, self._maybe_decorate("这张图我没改动……换一张试试？"),
+                             event.unified_msg_origin)
+            return True
+        await self._send_chat(event, caption, None, data, None, force_image=True)
+        self._feedback_sent(kind, event.unified_msg_origin)
+        return True
 
     async def _image_studio_command(self, event, text: str) -> bool:
         """用户直接下命令做图：定制图 / 表情包 / 成就卡 / 改图加字。"""
@@ -6116,6 +6287,12 @@ class Main(star.Star):
                 if await self._send(event, self._maybe_decorate(self._env_answer(env_kind)), event.unified_msg_origin):
                     self._stop(event)
                 return
+            if await self._image_compare_command(event, text):
+                self._stop(event)
+                return
+            if await self._image_edit_command(event, text):
+                self._stop(event)
+                return
             if await self._image_understanding_command(event, text):
                 self._stop(event)
                 return
@@ -6302,6 +6479,12 @@ class Main(star.Star):
         sender = event.get_sender_name() or "群友"
         img_url, img_data, sticker = None, None, None
         await self._ensure_title(uid, sender)
+        if await self._image_compare_command(event, text):
+            self._stop(event)
+            return
+        if await self._image_edit_command(event, text):
+            self._stop(event)
+            return
         if await self._image_understanding_command(event, text):
             self._stop(event)
             return
@@ -6879,6 +7062,12 @@ class Main(star.Star):
         if env_kind:
             await self._send(event, self._maybe_decorate(self._env_answer(env_kind)), event.unified_msg_origin)
             return
+        if await self._image_compare_command(event, text):
+            self._stop(event)
+            return
+        if await self._image_edit_command(event, text):
+            self._stop(event)
+            return
         if await self._image_understanding_command(event, text):
             self._stop(event)
             return
@@ -7032,6 +7221,61 @@ class Main(star.Star):
                 self._remember_self(text, reply, "私聊")
 
     # ---------------- 冒泡 ----------------
+    def _proactive_state(self) -> dict:
+        if not hasattr(self, "_proactive_data"):
+            self._proactive_data = {"date": "", "count": 0, "last_ts": 0.0}
+            try:
+                if PROACTIVE_STATE_PATH.exists():
+                    data = json.loads(PROACTIVE_STATE_PATH.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        self._proactive_data.update(data)
+            except Exception:
+                pass
+        return self._proactive_data
+
+    def _proactive_save(self) -> None:
+        try:
+            PROACTIVE_STATE_PATH.write_text(
+                json.dumps(self._proactive_state(), ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _proactive_allowed(self, now: float | None = None) -> bool:
+        now = time.time() if now is None else float(now)
+        hm = time.strftime("%H:%M", time.gmtime(now + 8 * 3600))
+        start = str(self.cfg.get("proactive_quiet_start") or "23:00")
+        end = str(self.cfg.get("proactive_quiet_end") or "08:00")
+        if start <= end:
+            if start <= hm < end:
+                return False
+        elif hm >= start or hm < end:
+            return False
+        st = self._proactive_state()
+        day = time.strftime("%Y-%m-%d", time.gmtime(now + 8 * 3600))
+        if str(st.get("date") or "") != day:
+            st["date"] = day
+            st["count"] = 0
+            self._proactive_save()
+        if int(st.get("count") or 0) >= int(self.cfg.get("proactive_daily_cap", 6)):
+            return False
+        gap = max(0, int(self.cfg.get("proactive_min_gap_minutes", 45))) * 60
+        if gap and st.get("last_ts") and now - float(st.get("last_ts") or 0) < gap:
+            return False
+        return True
+
+    def _proactive_mark(self) -> None:
+        now = time.time()
+        st = self._proactive_state()
+        day = time.strftime("%Y-%m-%d", time.gmtime(now + 8 * 3600))
+        if str(st.get("date") or "") != day:
+            st["date"] = day
+            st["count"] = 0
+        st["count"] = int(st.get("count") or 0) + 1
+        st["last_ts"] = now
+        self._proactive_save()
+
     async def _idle_loop(self):
         await asyncio.sleep(60)
         while True:
@@ -7051,11 +7295,12 @@ class Main(star.Star):
                 if not self._rate_ok():
                     continue
                 hour = int(time.strftime("%H", time.gmtime(time.time() + 8 * 3600)))
-                if hour < 8 or hour >= 23:
+                if not self._proactive_allowed():
                     self._last_activity = time.time()
                     continue
                 if random.random() < float(self.cfg.get("sticker_idle_chance", 0.28)):
                     if await self._send_cached_sticker(self._umo):
+                        self._proactive_mark()
                         self._last_bot_reply = time.time()
                         self._reply_times.append(time.time())
                         self._last_activity = time.time()
@@ -7072,6 +7317,7 @@ class Main(star.Star):
                     lines = random.choice(["有人在吗，我有点想吃白米饭了。", "安静得像在待机……我先眯一会儿。"])
                 lines, _m1, _m2 = self._extract_markers(lines)
                 if await self._send(None, self._maybe_decorate(lines[:160]), self._umo):
+                    self._proactive_mark()
                     self._last_bot_reply = time.time()
                     self._reply_times.append(time.time())
                     self._last_activity = time.time()
@@ -7079,3 +7325,18 @@ class Main(star.Star):
                 return
             except Exception as e:
                 logger.warning(f"[小鲸] 冒泡异常: {e}")
+
+    async def terminate(self):
+        """插件卸载时取消后台任务，避免热重载后旧循环继续跑。"""
+        for name in ("_report_task", "_loop_task", "_ritual_task",
+                     "_idle_task", "_region_task"):
+            task = getattr(self, name, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+        logger.info("[小鲸] 插件已卸载，后台任务已取消")
