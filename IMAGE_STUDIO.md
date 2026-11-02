@@ -78,3 +78,45 @@ data/assets/image_templates.json
 - 详细署名见 `ASSETS.md` 与 `data/assets/CREDITS.md`
 
 素材只在本地使用，不随公开仓库分发。
+
+## 新增模板（2026-11-02）
+
+| kind | 命令 | 文字格式 |
+| --- | --- | --- |
+| `list` | `清单卡` / `要点卡` | `标题|条目1|条目2` |
+| `compare` | `对比卡` / `对比图` | `左标题|左内容|右标题|右内容` |
+| `timeline` | `时间线` / `日程卡` | `标题|09:00:事件|12:00:事件` |
+
+模型标记同样可用：
+
+```text
+[[CARD:list|这周要做的事|清日报|补看门狗]]
+[[CARD:compare|旧方案|文字描述|新方案|一张图]]
+[[CARD:timeline|今天的进度|09:00:起床|12:00:做图]]
+```
+
+## 读图 / OCR
+
+```text
+读图
+提取文字
+```
+
+需要当前消息或引用图。模型也可以写 `[[OCR]]` 主动读图。
+
+## 图片预算
+
+主动/会话图片默认：
+
+```json
+"image_budget_per_10min": 4,
+"image_cooldown_seconds": 45,
+"image_dedupe_minutes": 30
+```
+
+截图、日报、自拍、显式 `改图/定制图` 命令可通过 `force_image` 绕过。
+
+## 反馈
+
+发送记录与用户正负反馈写入 `data/image_feedback.json`；
+模板目录会在提示词里显示 `反馈+N`，长期影响选型。

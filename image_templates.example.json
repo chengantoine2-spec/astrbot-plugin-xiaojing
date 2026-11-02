@@ -55,6 +55,47 @@
         "字幕"
       ],
       "when": "给现有图加字"
+    },
+    {
+      "id": "list",
+      "name": "清单卡",
+      "kind": "list",
+      "when": "步骤、要点、待办",
+      "character": "assets/community/q_c49_halfbody.jpg",
+      "accent": "#6EA8FF",
+      "keywords": [
+        "清单",
+        "要点",
+        "步骤",
+        "待办",
+        "整理"
+      ]
+    },
+    {
+      "id": "compare",
+      "name": "对比卡",
+      "kind": "compare",
+      "when": "对比、选择、前后变化",
+      "accent": "#F0C46A",
+      "keywords": [
+        "对比",
+        "比较",
+        "区别",
+        "前后"
+      ]
+    },
+    {
+      "id": "timeline",
+      "name": "时间线",
+      "kind": "timeline",
+      "when": "过程、计划、日程",
+      "accent": "#6EA8FF",
+      "keywords": [
+        "时间线",
+        "日程",
+        "计划",
+        "过程"
+      ]
     }
   ]
 }

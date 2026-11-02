@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
@@ -61,6 +62,31 @@ DEFAULT_TEMPLATES = {
             "kind": "edit_text",
             "when": "给现有图加字",
             "keywords": ["改图", "加字", "字幕"],
+        },
+        {
+            "id": "list",
+            "name": "清单卡",
+            "kind": "list",
+            "when": "步骤、要点、待办",
+            "character": "assets/community/q_c49_halfbody.jpg",
+            "accent": "#6EA8FF",
+            "keywords": ["清单", "要点", "步骤", "待办", "整理"],
+        },
+        {
+            "id": "compare",
+            "name": "对比卡",
+            "kind": "compare",
+            "when": "对比、选择、前后变化",
+            "accent": "#F0C46A",
+            "keywords": ["对比", "比较", "区别", "前后"],
+        },
+        {
+            "id": "timeline",
+            "name": "时间线",
+            "kind": "timeline",
+            "when": "过程、计划、日程",
+            "accent": "#6EA8FF",
+            "keywords": ["时间线", "日程", "计划", "过程"],
         },
     ],
 }
@@ -316,6 +342,118 @@ def _achievement(tpl: dict, text: str, source: bytes | None = None) -> Image.Ima
     return im.convert("RGB")
 
 
+def _split_items(text: str) -> list[str]:
+    raw = str(text or "").replace("\r", "")
+    if "|" in raw:
+        parts = raw.split("|")
+    else:
+        parts = raw.split("\n")
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _list_card(tpl: dict, text: str, source: bytes | None = None) -> Image.Image:
+    W, H = 1080, 720
+    accent = _hex(tpl.get("accent"), (110, 168, 255))
+    im = _gradient((W, H), (18, 28, 54), (34, 38, 66))
+    d = ImageDraw.Draw(im)
+    d.text((56, 42), "小鲸鱼整理", font=_font(24, True), fill=accent + (255,))
+    parts = _split_items(text)
+    title = parts[0] if parts else "清单"
+    items = parts[1:7] if len(parts) > 1 else parts[:6]
+    font, lines, line_h = _fit_text(d, title, 620, 100, start=44, min_size=26, bold=True)
+    y = 92
+    for line in lines[:2]:
+        d.text((56, y), line, font=font, fill=(248, 246, 240, 255))
+        y += line_h
+    y += 22
+    item_font = _font(27)
+    for i, item in enumerate(items, 1):
+        d.ellipse([58, y + 4, 78, y + 24], fill=accent + (255,))
+        d.text((67, y + 14), str(i), font=_font(16, True), fill=(12, 20, 38, 255), anchor="mm")
+        wraps = _wrap(d, item, item_font, 560)
+        for j, line in enumerate(wraps[:2]):
+            d.text((94, y + j * 36), line, font=item_font, fill=(225, 232, 246, 255))
+        y += max(44, len(wraps[:2]) * 36) + 14
+        if y > H - 80:
+            break
+    path = _asset_path(str(tpl.get("character") or ""))
+    if path:
+        try:
+            ch = _contain(_trim_light(Image.open(path)), (250, 330))
+            im.alpha_composite(ch.convert("RGBA"), (790, 240))
+        except Exception:
+            pass
+    d.rounded_rectangle([24, 24, W - 25, H - 25], radius=24,
+                        outline=accent + (100,), width=2)
+    return im.convert("RGB")
+
+
+def _compare_card(tpl: dict, text: str, source: bytes | None = None) -> Image.Image:
+    W, H = 1080, 720
+    accent = _hex(tpl.get("accent"), (110, 168, 255))
+    im = _gradient((W, H), (18, 28, 54), (34, 38, 66))
+    d = ImageDraw.Draw(im)
+    d.text((56, 40), "对比一下", font=_font(24, True), fill=accent + (255,))
+    parts = _split_items(text)
+    if len(parts) >= 4:
+        left_t, left_body, right_t, right_body = parts[0], parts[1], parts[2], parts[3]
+    else:
+        left_t, left_body, right_t, right_body = "左边", parts[0] if parts else "", "右边", parts[1] if len(parts) > 1 else ""
+    for x, title, body, color in (
+        (48, left_t, left_body, (120, 190, 255)),
+        (556, right_t, right_body, (240, 196, 120)),
+    ):
+        d.rounded_rectangle([x, 92, x + 464, 650], radius=24,
+                            fill=(24, 36, 68, 255), outline=color + (160,), width=2)
+        d.text((x + 28, 116), title, font=_font(34, True), fill=color + (255,))
+        font = _font(24)
+        y = 180
+        for line in _wrap(d, body, font, 400)[:12]:
+            d.text((x + 28, y), line, font=font, fill=(226, 233, 246, 255))
+            y += 38
+    d.rectangle([532, 120, 546, 620], fill=accent + (160,))
+    d.text((540, 360), "VS", font=_font(28, True), fill=(255, 255, 255, 255), anchor="mm")
+    d.rounded_rectangle([24, 24, W - 25, H - 25], radius=24,
+                        outline=accent + (100,), width=2)
+    return im.convert("RGB")
+
+
+def _timeline_card(tpl: dict, text: str, source: bytes | None = None) -> Image.Image:
+    W, H = 1080, 720
+    accent = _hex(tpl.get("accent"), (110, 168, 255))
+    im = _gradient((W, H), (18, 28, 54), (34, 38, 66))
+    d = ImageDraw.Draw(im)
+    d.text((56, 40), "时间线", font=_font(24, True), fill=accent + (255,))
+    parts = _split_items(text)
+    title = parts[0] if parts else "过程"
+    items = parts[1:6] if len(parts) > 1 else []
+    d.text((56, 84), title[:24], font=_font(40, True), fill=(248, 246, 240, 255))
+    x = 108
+    d.line([(x, 178), (x, 646)], fill=accent + (180,), width=4)
+    y = 190
+    for item in items:
+        m = re.match(r"^(\d{1,2}[:：]\d{2})\s*[:：|]?\s*(.+)$", item)
+        if m:
+            when, what = m.group(1), m.group(2)
+        elif ":" in item:
+            when, what = item.split(":", 1)
+        elif "：" in item:
+            when, what = item.split("：", 1)
+        elif "|" in item:
+            when, what = item.split("|", 1)
+        else:
+            when, what = "", item
+        d.ellipse([x - 10, y + 8, x + 10, y + 28], fill=accent + (255,))
+        if when:
+            d.text((x + 28, y), when.strip()[:16], font=_font(22, True), fill=(240, 196, 120, 255))
+        for k, line in enumerate(_wrap(d, what.strip(), _font(26), 760)[:2]):
+            d.text((x + 28, y + 30 + k * 34), line, font=_font(26), fill=(226, 233, 246, 255))
+        y += 96
+    d.rounded_rectangle([24, 24, W - 25, H - 25], radius=24,
+                        outline=accent + (100,), width=2)
+    return im.convert("RGB")
+
+
 def _edit_text(tpl: dict, text: str, source: bytes | None = None,
                options: dict | None = None) -> Image.Image:
     if not source:
@@ -362,6 +500,12 @@ def render(template_id: str = "quote", text: str = "",
         im = _meme(tpl, text, source)
     elif kind == "achievement":
         im = _achievement(tpl, text, source)
+    elif kind == "list":
+        im = _list_card(tpl, text, source)
+    elif kind == "compare":
+        im = _compare_card(tpl, text, source)
+    elif kind == "timeline":
+        im = _timeline_card(tpl, text, source)
     elif kind == "edit_text":
         im = _edit_text(tpl, text, source, options)
     else:

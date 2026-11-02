@@ -115,6 +115,7 @@ SELF_PATH = DATA_DIR / "self.md"
 SELF_NOTES = DATA_DIR / "self_notes.md"
 CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
+IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
 MEM_DIR.mkdir(parents=True, exist_ok=True)
@@ -187,6 +188,9 @@ DEFAULTS = {
     "home_selfie_cooldown_seconds": 300,
     "home_selfie_style": "premium",
     "home_selfie_form": "q",
+    "image_budget_per_10min": 4,
+    "image_cooldown_seconds": 45,
+    "image_dedupe_minutes": 30,
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -273,6 +277,7 @@ PAGE_MARK_RE = re.compile(r"\[\[READ[:：]\s*(https?://[^\]\s]+)\s*\]\]", re.I)
 SHOT_MARK_RE = re.compile(r"\[\[SHOT[:：]\s*(https?://[^\]\s]+)\s*\]\]", re.I)
 SELFIE_MARK_RE = re.compile(r"\[\[SELFIE(?::[^\]]*)?\]\]", re.I)
 CARD_MARK_RE = re.compile(r"\[\[CARD(?:[:：]\s*([^\]]+))?\]\]", re.I)
+OCR_MARK_RE = re.compile(r"\[\[OCR\]\]", re.I)
 VIDEO_MARK_RE = re.compile(r"\[\[VIDEO(?:[:：]\s*(https?://[^\]\s]+))?\s*\]\]", re.I)
 CARD_REF_RE = re.compile(
     r"(?:看|看看|看下|看一下|解析|总结|讲讲|说说|评价|分析).{0,8}"
@@ -556,7 +561,8 @@ class Main(star.Star):
             "- [[REPORT:早报|晚报]] 发日报长图（对方要日报、今天新闻汇总、早报/晚报时）"
             "- [[HISTORY:关键词或最近]] 查这个会话最近的聊天记录（对方问之前说过什么、群里发生过什么时）"
             "- [[IMG:具体描述]] 配图或表情包（对方要图、或此刻用图更自然时）"
-            "- [[CARD:模板|文字]] 做一张定制图（quote 语录卡 / meme 表情包 / achievement 成就卡 / edit 改图加字）；模板可省略，文字不超过 60 字。"
+            "- [[CARD:模板|文字]] 做一张定制图（quote 语录卡 / meme 表情包 / achievement 成就卡 / list 清单卡 / compare 对比卡 / timeline 时间线 / edit 改图加字）；模板可省略，文字不超过 60 字。"
+            "- [[OCR]] 读当前图/引用图里的文字（截图、报错、表格时）"
             "[[IMG]] 的描述要短，不超过 20 字；不要复制上一段画面描述或整句需求。"
             "[[IMG]] 只是从网上找现成图片/表情包，不是画画。"
             "【图片表达总则】文字不如一张图时，主动做图：情绪/吐槽用 meme，观点/总结用 quote，里程碑用 achievement，指图/改图用 edit；问你在干嘛用 [[SELFIE]]，要证据用 [[SHOT]]/视频帧。先判断对方需要，不要为发图而发图；图要匹配时间、场景和形象，不伪造证据。"
@@ -585,10 +591,14 @@ class Main(star.Star):
         try:
             tpls = image_studio.templates()
             if tpls:
-                catalog = "；".join(
-                    f"{t.get('id')}={t.get('name')}（{t.get('when') or '通用'}）"
-                    for t in tpls if t.get("id")
-                )
+                parts = []
+                for t in tpls:
+                    if not t.get("id"):
+                        continue
+                    score = self._feedback_score(str(t.get("id")))
+                    hint = f"，反馈{score:+d}" if score else ""
+                    parts.append(f"{t.get('id')}={t.get('name')}（{t.get('when') or '通用'}{hint}）")
+                catalog = "；".join(parts)
                 if catalog:
                     rules += ("\n【图片工坊模板】" + catalog +
                               "。需要时写 [[CARD:模板|文字]]，文字不超过 60 字。")
@@ -1591,6 +1601,10 @@ class Main(star.Star):
         item = await self._pick_cached_sticker(umo)
         if not item:
             return False
+        key = "file:" + str(item.get("path") or "")
+        if not self._allow_image(umo, key):
+            logger.info("[小鲸] 表情包预算/去重拦截")
+            return False
         self_like = self._self_sticker_bonus(item) > 0
         line = random.choice([
             "翻到一张鲸鱼表情包，忍不住发出来～" if self_like else "翻出之前存的表情包～",
@@ -1600,6 +1614,8 @@ class Main(star.Star):
         chain = MessageChain(chain=[Image(file=item["path"]), Plain(text=line)])
         ok = await self._send(None, chain, umo)
         if ok:
+            self._mark_image(umo, key)
+            self._feedback_sent("sticker", umo)
             item["sent"] = int(item.get("sent", 0)) + 1
             item["last_sent"] = time.time()
             self._save_sticker_cache()
@@ -1669,6 +1685,88 @@ class Main(star.Star):
             return data if len(data) <= 8 * 1024 * 1024 else b""
         except Exception:
             return b""
+
+    def _vision_struct_state(self):
+        if not hasattr(self, "_vision_struct_cache"):
+            self._vision_struct_cache: dict[str, tuple[float, dict]] = {}
+        return self._vision_struct_cache
+
+    async def _vision_struct(self, data: bytes, task: str = "general") -> dict:
+        """结构化视觉结果：scene/objects/text/mood/confidence；按图片哈希缓存。"""
+        try:
+            key = f"{task}:{hashlib.sha1(data).hexdigest()}"
+        except Exception:
+            return {}
+        cache = self._vision_struct_state()
+        hit = cache.get(key)
+        if hit and time.time() - hit[0] < 1800:
+            return dict(hit[1])
+        if task == "ocr":
+            prompt = (
+                "只输出 JSON：{\"text\":\"图中所有可见文字，按行原样输出；没有文字就空字符串\"}。"
+                "不要解释，不要翻译，不要猜测看不清的字。"
+            )
+        else:
+            prompt = (
+                "只输出 JSON：{\"scene\":\"一句话场景\",\"objects\":[\"最显眼的物体1\",\"物体2\"],"
+                "\"text\":\"图中可见文字，没有就空字符串\",\"mood\":\"氛围\","
+                "\"relations\":\"物体之间的一句话关系\",\"confidence\":0.0}。"
+                "不要猜测看不清的内容，confidence 用 0 到 1。"
+            )
+        out = await self._vision(data, prompt, max_tokens=600, temperature=0)
+        info: dict = {}
+        m = re.search(r"\{.*\}", out or "", re.S)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+                if isinstance(parsed, dict):
+                    info = parsed
+            except Exception:
+                pass
+        if not info:
+            info = {"caption": (out or "").strip()[:300]}
+        for k in ("scene", "mood", "relations", "caption"):
+            if k in info:
+                info[k] = str(info.get(k) or "")[:300]
+        if "objects" in info and isinstance(info["objects"], list):
+            info["objects"] = [str(x)[:60] for x in info["objects"][:8]]
+        if "text" in info:
+            info["text"] = str(info.get("text") or "")[:2000]
+        try:
+            info["confidence"] = max(0.0, min(1.0, float(info.get("confidence") or 0)))
+        except Exception:
+            info["confidence"] = 0.0
+        cache[key] = (time.time(), info)
+        if len(cache) > 300:
+            for k in sorted(cache, key=lambda x: cache[x][0])[:80]:
+                cache.pop(k, None)
+        return info
+
+    async def _image_understanding_command(self, event, text: str) -> bool:
+        """读图 / 提取文字。"""
+        t = re.sub(r"^(小鲸鱼?|小鲸)[\s，,]*", "", (text or "").strip()).strip()
+        if not t:
+            return False
+        if not (t in ("读图", "提取文字", "文字识别", "ocr", "OCR")
+                or t.startswith(("读图", "提取文字", "文字识别"))):
+            return False
+        data = await self._event_image_bytes(event)
+        if not data:
+            await self._send(
+                event,
+                self._maybe_decorate("先发我一张图，我才能读上面的字～"),
+                event.unified_msg_origin,
+            )
+            return True
+        info = await self._vision_struct(data, "ocr")
+        txt = str(info.get("text") or "").strip()
+        if not txt:
+            txt = "这张图里没读到清楚的文字。"
+        else:
+            txt = "图里的文字：\n" + txt[:1200]
+        await self._send(event, self._maybe_decorate(txt), event.unified_msg_origin)
+        logger.info(f"[小鲸] OCR：{len(txt)} 字")
+        return True
 
     async def _vision_multi(self, images: list[bytes], question: str, max_tokens: int | None = None) -> str:
         key = self._vision_key()
@@ -3380,7 +3478,8 @@ class Main(star.Star):
             return ["".join(parts[:mid]), "".join(parts[mid:])]
         return parts
 
-    async def _send_chat(self, event, text, img_url=None, img_data=None, sticker=None) -> bool:
+    async def _send_chat(self, event, text, img_url=None, img_data=None, sticker=None,
+                         force_image: bool = False) -> bool:
         text = clean_marker_residue(text)
         try:
             if event is not None and text:
@@ -3399,7 +3498,7 @@ class Main(star.Star):
                         await asyncio.sleep(random.uniform(0.6, 1.2))
                 return True
         return await self._send(
-            event, self._maybe_decorate(text, img_url, img_data, sticker), event.unified_msg_origin
+            event, self._maybe_decorate(text, img_url, img_data, sticker, force_image), event.unified_msg_origin
         )
 
     async def _fetch_history(self, event, keyword: str = "") -> str:
@@ -3661,13 +3760,142 @@ class Main(star.Star):
             return True
 
     # ---------------- 发送 ----------------
-    def _maybe_decorate(self, text: str, img_url: str | None = None, img_data: bytes | None = None, sticker: str | None = None):
+    def _image_budget_state(self):
+        if not hasattr(self, "_image_log"):
+            self._image_log: dict[str, list[float]] = {}
+            self._image_keys: dict[str, list[tuple[str, float]]] = {}
+        return self._image_log, self._image_keys
+
+    @staticmethod
+    def _image_key(img_url=None, img_data=None, sticker=None) -> str:
+        if img_data:
+            try:
+                return "data:" + hashlib.sha1(img_data).hexdigest()
+            except Exception:
+                return "data:unknown"
+        if sticker:
+            return "file:" + str(sticker)
+        return "url:" + str(img_url or "")
+
+    def _allow_image(self, umo: str | None, key: str, force: bool = False) -> bool:
+        if force:
+            return True
+        now = time.time()
+        log, keys = self._image_budget_state()
+        sess = umo or self._umo or "default"
+        # 10 分钟预算
+        recent = [t for t in log.get(sess, []) if now - t < 600]
+        budget = max(1, int(self.cfg.get("image_budget_per_10min", 4)))
+        if len(recent) >= budget:
+            return False
+        # 最短间隔
+        cooldown = max(0, int(self.cfg.get("image_cooldown_seconds", 45)))
+        if recent and now - recent[-1] < cooldown:
+            return False
+        # 同图去重
+        dedupe = max(0, int(self.cfg.get("image_dedupe_minutes", 30))) * 60
+        if key and any(k == key for k, t in keys.get(sess, []) if now - t < dedupe):
+            return False
+        return True
+
+    def _mark_image(self, umo: str | None, key: str) -> None:
+        if not key:
+            return
+        now = time.time()
+        log, keys = self._image_budget_state()
+        sess = umo or self._umo or "default"
+        log[sess] = ([t for t in log.get(sess, []) if now - t < 600][-19:] + [now])
+        keys[sess] = ([(k, t) for k, t in keys.get(sess, []) if now - t < 86400][-49:] + [(key, now)])
+
+    def _feedback_state(self) -> dict:
+        if not hasattr(self, "_image_feedback"):
+            self._image_feedback: dict = {"templates": {}}
+            try:
+                if IMAGE_FEEDBACK_PATH.exists():
+                    data = json.loads(IMAGE_FEEDBACK_PATH.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        self._image_feedback = data
+                        self._image_feedback.setdefault("templates", {})
+            except Exception:
+                pass
+        return self._image_feedback
+
+    def _feedback_save(self) -> None:
+        try:
+            IMAGE_FEEDBACK_PATH.write_text(
+                json.dumps(self._feedback_state(), ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _feedback_sent(self, kind: str, umo: str | None = None) -> None:
+        kind = str(kind or "").strip()
+        if not kind:
+            return
+        state = self._feedback_state()
+        rec = state.setdefault("templates", {}).setdefault(
+            kind, {"sent": 0, "positive": 0, "negative": 0})
+        rec["sent"] = int(rec.get("sent", 0)) + 1
+        rec["last_sent"] = time.time()
+        self._feedback_save()
+        self._last_image_meta = {
+            "kind": kind,
+            "umo": umo or self._umo or "default",
+            "ts": time.time(),
+        }
+
+    def _feedback_reaction(self, text: str, umo: str | None = None) -> None:
+        meta = getattr(self, "_last_image_meta", None)
+        if not isinstance(meta, dict):
+            return
+        now = time.time()
+        if now - float(meta.get("ts") or 0) > 120:
+            self._last_image_meta = None
+            return
+        if str(meta.get("umo") or "") != str(umo or self._umo or "default"):
+            return
+        t = str(text or "")
+        pos_keys = ("好看", "可爱", "喜欢", "哈哈", "笑死", "好耶", "不错", "贴贴",
+                    "awsl", "爱了", "萌", "太棒", "👍", "🐳", "❤")
+        neg_keys = ("别发图", "不要图", "太频繁", "刷屏", "难看", "丑", "不搭",
+                    "别刷", "烦")
+        pos = any(k in t for k in pos_keys)
+        neg = any(k in t for k in neg_keys)
+        if not pos and not neg:
+            return
+        kind = str(meta.get("kind") or "")
+        state = self._feedback_state()
+        rec = state.setdefault("templates", {}).setdefault(
+            kind, {"sent": 0, "positive": 0, "negative": 0})
+        if pos:
+            rec["positive"] = int(rec.get("positive", 0)) + 1
+        if neg:
+            rec["negative"] = int(rec.get("negative", 0)) + 1
+        rec["last_reaction"] = now
+        self._feedback_save()
+        self._last_image_meta = None
+        logger.info(f"[小鲸] 图片反馈：{kind} {'正' if pos else '负'}")
+
+    def _feedback_score(self, kind: str) -> int:
+        rec = self._feedback_state().get("templates", {}).get(str(kind or ""), {})
+        return int(rec.get("positive", 0)) - int(rec.get("negative", 0))
+
+    def _maybe_decorate(self, text: str, img_url: str | None = None, img_data: bytes | None = None, sticker: str | None = None, force_image: bool = False):
         if text:
             text = clean_marker_residue(text)
+        umo = self._umo or "default"
+        key = self._image_key(img_url, img_data, sticker)
+        if (img_url or img_data or sticker) and not self._allow_image(umo, key, force=force_image):
+            logger.info(f"[小鲸] 图片预算/去重拦截：{key[:50]}")
+            img_url = img_data = sticker = None
+            key = ""
         chain = []
+        attached = False
         if sticker:
             try:
                 chain.append(Image(file=sticker))
+                attached = True
             except Exception as e:
                 logger.warning(f"[小鲸] 本地表情发送失败: {e}")
         elif img_data:
@@ -3675,10 +3903,14 @@ class Main(star.Star):
                 fp = CACHE_DIR / f"img_{int(time.time() * 1000)}.jpg"
                 fp.write_bytes(img_data)
                 chain.append(Image(file=str(fp)))
+                attached = True
             except Exception as e:
                 logger.warning(f"[小鲸] 本地图片发送失败: {e}")
         elif img_url:
             chain.append(Image(url=img_url))
+            attached = True
+        if attached and key:
+            self._mark_image(umo, key)
 
         if text:
             text = self._apply_kao_marker(text)
@@ -3977,6 +4209,7 @@ class Main(star.Star):
 
     async def _learn_feedback(self, event: AstrMessageEvent, text: str, uid: str) -> None:
         """看上一轮之后用户的正负反馈，调整她对那个话题的好恶。"""
+        self._feedback_reaction(text, event.unified_msg_origin)
         last = self._last_topic.get(uid)
         if not last:
             return
@@ -4750,6 +4983,7 @@ class Main(star.Star):
         ok = await self._send(event, MessageChain(chain=[Image(file=str(fp))]), umo)
         if not ok:
             return "自拍没发出去……稍后再试一次？"
+        self._feedback_sent("selfie", umo)
         logger.info(f"[小鲸] 自拍：{activity} → {fp.name}")
         return caption
 
@@ -4781,6 +5015,26 @@ class Main(star.Star):
             return text, ""
         spec = (m.group(1) or "").strip()
         return clean_marker_residue(CARD_MARK_RE.sub("", text)), spec
+
+    @staticmethod
+    def _take_ocr_marker(text: str) -> tuple[str, bool]:
+        m = OCR_MARK_RE.search(text or "")
+        if not m:
+            return text, False
+        return clean_marker_residue(OCR_MARK_RE.sub("", text)), True
+
+    async def _apply_ocr_marker(self, reply: str, event) -> str:
+        reply, mark = self._take_ocr_marker(reply)
+        if not mark:
+            return reply
+        data = await self._event_image_bytes(event)
+        if not data:
+            return reply
+        info = await self._vision_struct(data, "ocr")
+        txt = str(info.get("text") or "").strip()
+        if txt:
+            reply = (reply + "\n图里的文字：\n" + txt[:1200]).strip()
+        return reply
 
     # ---------------- 视频 ----------------
     @staticmethod
@@ -5078,7 +5332,7 @@ class Main(star.Star):
             await self._send(event, self._maybe_decorate("参考图找到了，但我没处理动……再试一次？"),
                              event.unified_msg_origin)
             return False
-        await self._send_chat(event, f"给你做了个{label}版的{subject or query}～", None, out, None)
+        await self._send_chat(event, f"给你做了个{label}版的{subject or query}～", None, out, None, force_image=True)
         self._remember_output_image(event, out, subject or query, style)
         return True
 
@@ -5115,7 +5369,7 @@ class Main(star.Star):
                 data = image_tools.to_jpeg(
                     image_tools.draw_simple("pixel", subject, caption or subject)
                 )
-                await self._send_chat(event, f"给你画了个像素{subject}～", None, data, None)
+                await self._send_chat(event, f"给你画了个像素{subject}～", None, data, None, force_image=True)
                 self._remember_output_image(event, data, subject, "pixel")
                 return True
             except Exception as e:
@@ -5127,7 +5381,7 @@ class Main(star.Star):
                     image_tools.draw_simple(style, subject, caption or subject)
                 )
                 label = "图标" if style == "icon" else "简笔画"
-                await self._send_chat(event, f"给你画了个{subject}{label}～", None, data, None)
+                await self._send_chat(event, f"给你画了个{subject}{label}～", None, data, None, force_image=True)
                 self._remember_output_image(event, data, subject, style)
                 return True
             except Exception as e:
@@ -5237,9 +5491,12 @@ class Main(star.Star):
             tpl = image_studio.pick_template(template_id)
             if str(tpl.get("kind") or "") in ("meme", "edit_text"):
                 source = await self._event_image_bytes(event)
-            return await asyncio.to_thread(
+            data = await asyncio.to_thread(
                 image_studio.render, template_id, content, source,
             )
+            self._feedback_sent(str(tpl.get("id") or template_id or "quote"),
+                                getattr(event, "unified_msg_origin", None))
+            return data
         except Exception as e:
             logger.info(f"[小鲸] 定制图失败：{e}")
             return None
@@ -5251,7 +5508,10 @@ class Main(star.Star):
             return False
         prefixes = (
             ("定制图", "quote"), ("做张图", "quote"), ("语录卡", "quote"), ("小鲸鱼说", "quote"),
-            ("成就卡", "achievement"), ("表情包", "meme"), ("做表情包", "meme"),
+            ("成就卡", "achievement"), ("清单卡", "list"), ("清单", "list"), ("要点卡", "list"),
+            ("对比卡", "compare"), ("对比图", "compare"),
+            ("时间线", "timeline"), ("日程卡", "timeline"),
+            ("表情包", "meme"), ("做表情包", "meme"),
             ("改图", "edit"), ("加字", "edit"),
         )
         for prefix, template in prefixes:
@@ -5280,7 +5540,8 @@ class Main(star.Star):
                     event.unified_msg_origin,
                 )
                 return True
-            await self._send_chat(event, "做好了～", None, data, None)
+            await self._send_chat(event, "做好了～", None, data, None, force_image=True)
+            self._feedback_sent(template, event.unified_msg_origin)
             self._remember_output_image(event, data, style=template)
             return True
         return False
@@ -5294,11 +5555,11 @@ class Main(star.Star):
             return False
         desc = ""
         try:
-            desc = await self._vision(
-                data,
-                "用一句话列出图中最显眼的 3 个对象，用顿号分隔，不要猜测。",
-                max_tokens=120,
-            )
+            info = await self._vision_struct(data, "general")
+            objs = info.get("objects") or []
+            desc = "、".join(str(x) for x in objs[:5])
+            if not desc:
+                desc = str(info.get("scene") or info.get("caption") or "")
         except Exception:
             pass
         spec = await self._chat_json(
@@ -5349,7 +5610,8 @@ class Main(star.Star):
             logger.info(f"[小鲸] 标注失败：{e}")
             await self._send(event, self._maybe_decorate("这张图我标不动……换一张试试？"), event.unified_msg_origin)
             return False
-        await self._send_chat(event, "标好了～", None, out, None)
+        await self._send_chat(event, "标好了～", None, out, None, force_image=True)
+        self._feedback_sent("annotate", event.unified_msg_origin)
         self._remember_output_image(event, out, style="annotate")
         return True
 
@@ -5425,7 +5687,7 @@ class Main(star.Star):
             await self._send(event, self._maybe_decorate("这张图我没处理动……换一张试试？"),
                              event.unified_msg_origin)
             return False
-        await self._send_chat(event, f"给你做了个{label}版～", None, out, None)
+        await self._send_chat(event, f"给你做了个{label}版～", None, out, None, force_image=True)
         self._remember_output_image(event, out, style=style)
         return True
 
@@ -5854,6 +6116,9 @@ class Main(star.Star):
                 if await self._send(event, self._maybe_decorate(self._env_answer(env_kind)), event.unified_msg_origin):
                     self._stop(event)
                 return
+            if await self._image_understanding_command(event, text):
+                self._stop(event)
+                return
             if await self._image_studio_command(event, text):
                 self._stop(event)
                 return
@@ -5953,6 +6218,7 @@ class Main(star.Star):
                     reply = "我没找到你说的那个视频，再发我一次，或者把链接丢过来？"
 
             reply, card_spec = self._take_card_marker(reply)
+            reply = await self._apply_ocr_marker(reply, event)
             if card_spec and not img_data and not sticker:
                 card_data = await self._render_card(card_spec, text, reply, event)
                 if card_data:
@@ -6036,6 +6302,9 @@ class Main(star.Star):
         sender = event.get_sender_name() or "群友"
         img_url, img_data, sticker = None, None, None
         await self._ensure_title(uid, sender)
+        if await self._image_understanding_command(event, text):
+            self._stop(event)
+            return
         if await self._image_studio_command(event, text):
             self._stop(event)
             return
@@ -6150,6 +6419,7 @@ class Main(star.Star):
             self._stop(event)
             return
         reply, card_spec = self._take_card_marker(reply)
+        reply = await self._apply_ocr_marker(reply, event)
         if card_spec and not img_data and not sticker:
             card_data = await self._render_card(card_spec, text, reply, event)
             if card_data:
@@ -6609,6 +6879,9 @@ class Main(star.Star):
         if env_kind:
             await self._send(event, self._maybe_decorate(self._env_answer(env_kind)), event.unified_msg_origin)
             return
+        if await self._image_understanding_command(event, text):
+            self._stop(event)
+            return
         if await self._image_studio_command(event, text):
             self._stop(event)
             return
@@ -6663,6 +6936,7 @@ class Main(star.Star):
             reply = MUSIC_MARK_RE.sub("", reply).strip()
         reply, marker_img, marker_search = self._extract_markers(reply)
         reply, card_spec = self._take_card_marker(reply)
+        reply = await self._apply_ocr_marker(reply, event)
         if card_spec and not img_data and not sticker:
             card_data = await self._render_card(card_spec, text, reply, event)
             if card_data:
