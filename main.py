@@ -57,6 +57,16 @@ except Exception:
     from home_scene import render_home_scene
 
 try:
+    from . import asset_library
+except Exception:
+    import asset_library
+
+try:
+    from .premium_selfie import render_premium_selfie
+except Exception:
+    from premium_selfie import render_premium_selfie
+
+try:
     from .video_reader import VideoResult, extract_bvid, format_timestamp, is_bilibili, process_video
 except Exception:
     from video_reader import VideoResult, extract_bvid, format_timestamp, is_bilibili, process_video
@@ -97,6 +107,7 @@ HOME_PATH = DATA_DIR / "home.json"
 HOME_SELFIE_DIR = DATA_DIR / "home" / "selfies"
 HOME_SELFIE_DIR.mkdir(parents=True, exist_ok=True)
 SELF_PATH = DATA_DIR / "self.md"
+SELF_NOTES = DATA_DIR / "self_notes.md"
 CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 MEM_DIR = DATA_DIR / "memory"
@@ -169,6 +180,7 @@ DEFAULTS = {
     "page_shot_cache_seconds": 1800,
     "home_enabled": True,
     "home_selfie_cooldown_seconds": 300,
+    "home_selfie_style": "pixel",
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -618,12 +630,31 @@ class Main(star.Star):
                 if not ok:
                     await self._reply_polished(event, "这个页面截图失败了，可能是加载超时或站点不让截。")
                 return True
-        if re.sub(r"^(小鲸鱼?|小鲸)[\s，,]*", "", t).strip(" ？?。!！") in (
-            "自拍", "拍一张", "来张自拍", "看看你",
-        ):
+        core = re.sub(r"^(小鲸鱼?|小鲸)[\s，,]*", "", t).strip(" ？?。!！")
+        if core in ("自拍", "拍一张", "来张自拍", "看看你"):
             cap = await self._send_selfie(event, force=True)
             if cap:
                 self._reply(event, cap)
+            return True
+        if core in ("精致自拍", "精美自拍", "高质量自拍"):
+            cap = await self._send_selfie(event, force=True, style="premium")
+            if cap:
+                self._reply(event, cap)
+            return True
+        if core in ("像素自拍",):
+            cap = await self._send_selfie(event, force=True, style="pixel")
+            if cap:
+                self._reply(event, cap)
+            return True
+        if core in ("默认精致自拍", "以后都用精致自拍"):
+            self.cfg["home_selfie_style"] = "premium"
+            self._save_cfg()
+            self._reply(event, "好，以后默认用精致自拍。")
+            return True
+        if core in ("默认像素自拍", "以后都用像素自拍"):
+            self.cfg["home_selfie_style"] = "pixel"
+            self._save_cfg()
+            self._reply(event, "好，以后默认用像素自拍。")
             return True
         if re.match(r"^(?:小鲸鱼?|小鲸)?[\s，,]*?(?:看|解析|总结)?视频", t):
             src, local = await self._resolve_video_source(event, t)
@@ -4579,33 +4610,53 @@ class Main(star.Star):
             text += " 有点没精神……"
         return text
 
-    async def _render_selfie(self, force: bool = False) -> tuple[Path, str, str]:
+    async def _render_selfie(self, force: bool = False,
+                             style: str | None = None) -> tuple[Path, str, str]:
         st = self._pick_activity(force=False)
         activity = str(st.get("activity") or "发呆")
         mood = str(st.get("mood") or "平静")
         energy = int(st.get("energy") or 70)
         caption = self._selfie_caption(activity, mood)
+        style = str(style or self.cfg.get("home_selfie_style") or "pixel").lower()
+        if style not in ("pixel", "premium"):
+            style = "pixel"
         cooldown = max(0, int(self.cfg.get("home_selfie_cooldown_seconds", 300)))
         last = st.get("last_selfie") or {}
         last_raw = str(last.get("path") or "")
         last_path = Path(last_raw) if last_raw else None
         try:
             if (not force and last.get("activity") == activity
-                    and str(last.get("style") or "") == "pixel"
+                    and str(last.get("style") or "") == style
                     and last_path and last_path.exists()
                     and time.time() - float(last.get("ts") or 0) < cooldown):
                 return last_path, activity, caption
         except Exception:
             pass
-        portrait = DATA_DIR / "assets" / "whale_bg.webp"
         stamp = time.strftime("%H:%M", time.gmtime(time.time() + 8 * 3600))
         out = HOME_SELFIE_DIR / f"selfie_{int(time.time() * 1000)}.png"
-        await asyncio.to_thread(
-            render_home_scene, activity, mood, energy,
-            str(portrait) if portrait.exists() else None, str(out), stamp, "pixel",
-        )
+        rendered = False
+        if style == "premium":
+            try:
+                item = asset_library.pick(activity, mood=mood)
+                asset_path = asset_library.resolve(item)
+                if asset_path:
+                    await asyncio.to_thread(
+                        render_premium_selfie, activity, mood,
+                        str(asset_path), str(out), stamp,
+                    )
+                    rendered = True
+                    logger.info(f"[小鲸] 精致自拍素材：{item.get('id')}（{activity}）")
+            except Exception as e:
+                logger.warning(f"[小鲸] 精致自拍失败，回退像素：{e}")
+        if not rendered:
+            style = "pixel"
+            portrait = DATA_DIR / "assets" / "whale_bg.webp"
+            await asyncio.to_thread(
+                render_home_scene, activity, mood, energy,
+                str(portrait) if portrait.exists() else None, str(out), stamp, "pixel",
+            )
         st["last_selfie"] = {"ts": time.time(), "path": str(out),
-                             "activity": activity, "style": "pixel"}
+                             "activity": activity, "style": style}
         self._save_home(st)
         self._prune_selfies()
         return out, activity, caption
@@ -4620,8 +4671,9 @@ class Main(star.Star):
         except Exception:
             pass
 
-    async def _send_selfie(self, event, force: bool = False) -> str:
-        fp, activity, caption = await self._render_selfie(force=force)
+    async def _send_selfie(self, event, force: bool = False,
+                           style: str | None = None) -> str:
+        fp, activity, caption = await self._render_selfie(force=force, style=style)
         umo = getattr(event, "unified_msg_origin", None)
         ok = await self._send(event, MessageChain(chain=[Image(file=str(fp))]), umo)
         if not ok:
@@ -5357,11 +5409,13 @@ class Main(star.Star):
     # ---------------- 自我迭代 ----------------
     def _self_note(self) -> str:
         try:
-            if SELF_PATH.exists():
-                return SELF_PATH.read_text(encoding="utf-8").strip()[:1200]
+            card = SELF_PATH.read_text(encoding="utf-8").strip() if SELF_PATH.exists() else ""
+            notes = SELF_NOTES.read_text(encoding="utf-8").strip() if SELF_NOTES.exists() else ""
+            if card and notes:
+                return (card + "\n[最近的我]\n" + notes[-400:])[:1200]
+            return (card or notes)[:1200]
         except Exception:
-            pass
-        return ""
+            return ""
 
     async def _self_review(self, force: bool = False) -> bool:
         day = self._today()
@@ -5422,8 +5476,13 @@ class Main(star.Star):
                 logger.info(f"[小鲸] 自我调整：{applied}")
             if note:
                 try:
-                    old = self._self_note()
-                    SELF_PATH.write_text((old + "\n" + f"- {day}：{note}").strip()[:10000], encoding="utf-8")
+                    old = ""
+                    if SELF_NOTES.exists():
+                        old = SELF_NOTES.read_text(encoding="utf-8").strip()
+                    SELF_NOTES.write_text(
+                        (old + "\n" + f"- {day}：{note}").strip()[-4000:],
+                        encoding="utf-8",
+                    )
                 except Exception:
                     pass
         self._last_review = day
