@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2 - 2026-11-02
+
+- 并发隔离：contextvars 会话上下文、同会话发送锁，避免多群串回复
+- 任务编排：TaskOrchestrator，超时/失败隔离/并发上限；多图对比视觉与图片渲染并行
+- 自我修改沙箱：L1 笔记自动、L2 自我卡审批、L3 核心规则拒绝；快照/回滚/审计
+- 命令：自我修改、批准、拒绝、回滚、看看自我卡、提个自我修改
+- 文档：ORCHESTRATION.md、SELF_EDIT.md、WORLD_LEARNING.md
+
 ## 1.3.1 - 2026-11-02
 
 - 晚报抓取：newsnow 自动重试、备用源（zaobao / sspai / solidot / hackernews / bilibili-hot-search）与本地缓存

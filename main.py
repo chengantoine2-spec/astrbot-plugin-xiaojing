@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import base64
+import contextvars
 import hashlib
 import io
 import ipaddress
@@ -96,6 +97,16 @@ except Exception:
     import voice_tools
 
 try:
+    from .task_orchestrator import TaskOrchestrator
+except Exception:
+    from task_orchestrator import TaskOrchestrator
+
+try:
+    from . import self_editor
+except Exception:
+    import self_editor
+
+try:
     from .netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
 except Exception:
     from netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
@@ -131,7 +142,8 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.1"
+BUILD = "1.3.2"
+CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
 FACTS_PATH = MEM_DIR / "facts.json"
@@ -225,6 +237,7 @@ DEFAULTS = {
     "tts_fallback_sapi": True,
     "reply_max_bubbles": 2,
     "reply_split_chance": 0.35,
+    "task_concurrency": 4,
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -354,7 +367,7 @@ class Main(star.Star):
         self._last_bot_reply = 0.0
         self._reply_times: list[float] = []
         self._windows: dict[tuple[str, str], float] = {}
-        self._umo: str | None = None
+        self._last_umo: str | None = None
         self._idle_task: asyncio.Task | None = None
         self._started = time.time()
         self._titles: dict[str, tuple[str, float]] = {}
@@ -396,6 +409,15 @@ class Main(star.Star):
         if start_shutdown_hook(self._shutdown_message):
             logger.info("[小鲸] 关机钩子已就绪")
         logger.info(f"[小鲸] 社交模块已加载（热度 {self.cfg.get('heat')}）")
+
+    @property
+    def _umo(self):
+        return CURRENT_UMO.get() or self._last_umo
+
+    @_umo.setter
+    def _umo(self, value):
+        self._last_umo = value
+        CURRENT_UMO.set(value)
 
     # ---------------- 热度 ----------------
     def _apply_preset(self, heat: str, persist: bool = True) -> None:
@@ -890,6 +912,39 @@ class Main(star.Star):
                 await self._reply(event, "你@一个人，我再帮你查。")
                 return True
             await self._reply(event, "\n".join(self._identity_line(qq) for qq in uids[:4]))
+            return True
+        if core in ("自我修改", "待审批", "自我调整"):
+            await self._reply(event, self_editor.format_pending())
+            return True
+        if core.startswith(("批准", "通过")):
+            pid = re.sub(r"^(批准|通过)", "", core).strip(" ：:，,。#")
+            ok, msg = self_editor.apply(pid)
+            await self._reply(event, msg + (" 已写回提示词。" if ok else ""))
+            return True
+        if core.startswith("拒绝"):
+            pid = re.sub(r"^拒绝", "", core).strip(" ：:，,。#")
+            ok, msg = self_editor.reject(pid)
+            await self._reply(event, msg)
+            return True
+        if core.startswith("回滚"):
+            pid = re.sub(r"^回滚", "", core).strip(" ：:，,。#")
+            ok, msg = self_editor.rollback(pid)
+            await self._reply(event, msg)
+            return True
+        if core in ("看看自我卡", "自我卡"):
+            try:
+                txt = SELF_PATH.read_text(encoding="utf-8").strip()
+            except Exception:
+                txt = ""
+            await self._reply(event, (txt or "自我卡还没有内容。")[:1500])
+            return True
+        if core.startswith("提个自我修改"):
+            txt = re.sub(r"^提个自我修改", "", core).strip(" ：:，,。")
+            patch = self_editor.propose("style", txt, "主人提议", 1.0)
+            if patch:
+                await self._reply(event, f"提案 {patch['id']} 已创建，用「批准 {patch['id']}」生效。")
+            else:
+                await self._reply(event, "这条没能通过安全校验，换一种说法？")
             return True
         if core == "称呼":
             pref = self._preferred_name(uid)
@@ -4338,6 +4393,17 @@ class Main(star.Star):
             return True
         return bool(re.search(r"[（(][^（）()]{1,12}[）)]", t[-16:]))
 
+    def _task_orchestrator(self) -> TaskOrchestrator:
+        if not hasattr(self, "_task_orch") or self._task_orch is None:
+            self._task_orch = TaskOrchestrator(int(self.cfg.get("task_concurrency", 4)))
+        return self._task_orch
+
+    def _session_lock(self, umo: str | None):
+        if not hasattr(self, "_session_locks"):
+            self._session_locks: dict[str, asyncio.Lock] = {}
+        key = str(umo or self._umo or "default")
+        return self._session_locks.setdefault(key, asyncio.Lock())
+
     async def _send(self, event: AstrMessageEvent | None, chain: MessageChain, umo: str | None = None) -> bool:
         # 兜底：任何路径漏掉的颜文字标记，在真正发送前替换掉
         try:
@@ -4346,18 +4412,20 @@ class Main(star.Star):
                     comp.text = self._ensure_kaomoji_newline(self._apply_kao_marker(comp.text))
         except Exception:
             pass
-        try:
-            if event is not None:
-                await event.send(chain)
+        lock = self._session_lock(umo or self._umo)
+        async with lock:
+            try:
+                if event is not None:
+                    await event.send(chain)
+                    return True
+            except Exception as e:
+                logger.warning(f"[小鲸] event.send 失败: {e}")
+            try:
+                await self.context.send_message(umo or self._umo, chain)
                 return True
-        except Exception as e:
-            logger.warning(f"[小鲸] event.send 失败: {e}")
-        try:
-            await self.context.send_message(umo or self._umo, chain)
-            return True
-        except Exception as e:
-            logger.warning(f"[小鲸] 主动发送失败: {e}")
-            return False
+            except Exception as e:
+                logger.warning(f"[小鲸] 主动发送失败: {e}")
+                return False
 
     async def _reply_polished(self, event: AstrMessageEvent, factual: str, hint: str = "") -> None:
         """先用模型润色一句，再附上真实状态，避免模型改数字。"""
@@ -6103,7 +6171,17 @@ class Main(star.Star):
                 event.unified_msg_origin,
             )
             return True
-        res = await self._vision_compare(imgs[:2], t)
+        results = await self._task_orchestrator().gather([
+            ("vision_compare", lambda: self._vision_compare(imgs[:2], t)),
+            ("compare_image", lambda: asyncio.to_thread(image_edit.compare_images, imgs[0], imgs[1])),
+        ], timeout=40)
+        vres = next((r for r in results if r.kind == "vision_compare" and r.ok), None)
+        cres = next((r for r in results if r.kind == "compare_image" and r.ok), None)
+        res = vres.data if vres and isinstance(vres.data, dict) else {}
+        data = cres.data if cres else None
+        for r in results:
+            if not r.ok:
+                logger.info(f"[小鲸] 对比任务失败 {r.kind}: {r.error}")
         summary = str(res.get("summary") or "两张图各有特点。")
         lines = [summary]
         for item in (res.get("differences") or [])[:4]:
@@ -6118,11 +6196,6 @@ class Main(star.Star):
             lines.append(f"更适合：A。{reason}")
         elif winner == "b":
             lines.append(f"更适合：B。{reason}")
-        try:
-            data = await asyncio.to_thread(image_edit.compare_images, imgs[0], imgs[1])
-        except Exception as e:
-            logger.info(f"[小鲸] 对比图生成失败：{e}")
-            data = None
         await self._send_chat(event, "\n".join(lines)[:900], None, data, None,
                               force_image=True)
         self._feedback_sent("compare_images", event.unified_msg_origin)
@@ -6577,6 +6650,8 @@ class Main(star.Star):
                         (old + "\n" + f"- {day}：{note}").strip()[-4000:],
                         encoding="utf-8",
                     )
+                    if any(k in note for k in ("以后", "说话", "风格", "语气", "喜欢", "不喜欢")):
+                        self_editor.propose("style", note, "每日复盘", 0.7)
                 except Exception:
                     pass
         self._last_review = day

@@ -256,5 +256,6 @@
   "tts_instruct": "",
   "tts_fallback_sapi": true,
   "reply_max_bubbles": 2,
-  "reply_split_chance": 0.35
+  "reply_split_chance": 0.35,
+  "task_concurrency": 4
 }
