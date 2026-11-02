@@ -23,6 +23,7 @@ WINDIR = os.environ.get("WINDIR", r"C:\Windows")
 FONT_PATH = str(Path(WINDIR) / "Fonts" / "msyh.ttc")
 FONT_BOLD = str(Path(WINDIR) / "Fonts" / "msyhbd.ttc")
 WHALE_BG = Path(__file__).resolve().parent / "data" / "assets" / "whale_bg.webp"
+NEWS_CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache" / "news"
 
 TZ = timezone(timedelta(hours=8))
 
@@ -118,12 +119,14 @@ async def _text(url: str, timeout: int = 15) -> str:
 
 
 async def fetch_sixty() -> dict:
-    j = await _json("https://60s.viki.moe/v2/60s")
-    d = (j or {}).get("data") or {}
-    return {
-        "news": [str(x).strip() for x in d.get("news") or []],
-        "tip": str(d.get("tip") or "").strip(),
-    }
+    for _ in range(2):
+        j = await _json("https://60s.viki.moe/v2/60s", timeout=12)
+        d = (j or {}).get("data") or {}
+        news = [str(x).strip() for x in d.get("news") or []]
+        if news:
+            return {"news": news, "tip": str(d.get("tip") or "").strip()}
+        await asyncio.sleep(0.6)
+    return {"news": [], "tip": ""}
 
 
 async def fetch_quote() -> str:
@@ -137,16 +140,80 @@ async def fetch_quote() -> str:
     return ""
 
 
-async def fetch_newsnow(sid: str, n: int = 6) -> list[str]:
-    j = await _json(NEWSNOW + sid)
+def _news_cache_file(sid: str) -> Path:
+    safe = re.sub(r"[^0-9A-Za-z_-]+", "_", str(sid or ""))[:60] or "misc"
+    return NEWS_CACHE_DIR / f"{safe}.json"
+
+
+def _news_cache_load(sid: str) -> list[str]:
+    try:
+        data = json.loads(_news_cache_file(sid).read_text(encoding="utf-8"))
+        items = data.get("items") if isinstance(data, dict) else data
+        return [str(x).strip() for x in (items or []) if str(x).strip()]
+    except Exception:
+        return []
+
+
+def _news_cache_save(sid: str, items: list[str]) -> None:
+    try:
+        NEWS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _news_cache_file(sid).write_text(
+            json.dumps({"ts": datetime.now(TZ).isoformat(), "items": items[:8]},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+async def _fetch_newsnow_once(sid: str, n: int) -> list[str]:
+    j = await _json(NEWSNOW + sid, timeout=10)
     items = (j or {}).get("items") or []
     return [str(x.get("title") or "").strip() for x in items[:n] if x.get("title")]
 
 
+async def fetch_newsnow(sid: str, n: int = 6, fallbacks: tuple[str, ...] = ()) -> list[str]:
+    """重试 → 备用源 → 本地缓存，避免瞬时超时把板块打成空白。"""
+    for _ in range(2):
+        items = await _fetch_newsnow_once(sid, n)
+        if items:
+            _news_cache_save(sid, items)
+            return items
+        await asyncio.sleep(0.6)
+    for fb in fallbacks:
+        items = await _fetch_newsnow_once(fb, n)
+        if items:
+            _news_cache_save(sid, items)
+            return items
+    return _news_cache_load(sid)
+
+
+async def fetch_bilibili(n: int = 6) -> list[str]:
+    items = await fetch_newsnow("bilibili", n, fallbacks=("bilibili-hot-search",))
+    if items:
+        return items
+    j = await _json("https://api.bilibili.com/x/web-interface/ranking/v2?rid=0&type=all",
+                    timeout=12)
+    try:
+        items = [str(x.get("title") or "").strip()
+                 for x in ((j or {}).get("data") or {}).get("list", [])[:n]
+                 if x.get("title")]
+    except Exception:
+        items = []
+    if items:
+        _news_cache_save("bilibili", items)
+    return items
+
+
 async def fetch_weibo(n: int = 6) -> list[str]:
-    j = await _json("https://60s.viki.moe/v2/weibo")
-    items = (j or {}).get("data") or []
-    return [str(x.get("title") or "").strip() for x in items[:n] if x.get("title")]
+    for _ in range(2):
+        j = await _json("https://60s.viki.moe/v2/weibo", timeout=12)
+        items = (j or {}).get("data") or []
+        result = [str(x.get("title") or "").strip() for x in items[:n] if x.get("title")]
+        if result:
+            return result
+        await asyncio.sleep(0.6)
+    return await fetch_newsnow("weibo", n)
 
 
 async def _song_detail(s: dict) -> dict:
@@ -242,6 +309,22 @@ def _clip_diary(text: str, limit: int = 110) -> str:
         if i >= 40:
             return cut[: i + 1]
     return cut.rstrip("，、；： ") + "…"
+
+
+def _latest_diary_time() -> str:
+    base = Path(__file__).resolve().parent / "data"
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    fp = base / "diary" / f"{today}.md"
+    try:
+        txt = fp.read_text(encoding="utf-8")
+        stamps = re.findall(r"^##\s*(\d{2}:\d{2})", txt, re.M)
+        return stamps[-1] if stamps else ""
+    except Exception:
+        return ""
+
+
+def load_diary_info() -> tuple[str, str]:
+    return load_diary(), _latest_diary_time()
 
 
 def load_diary() -> str:
@@ -358,7 +441,10 @@ def render_html(data: dict) -> str:
 
     diary = str(data.get("diary") or "").strip()
     diary_block = (
-        f'<section class="card diary"><h2><i>🐋</i>小鲸的日记</h2>'
+        f'<section class="card diary"><h2><i>🐋</i>小鲸的日记'
+        + (f' <span style="font-size:14px;color:#a98b62;font-weight:400">{_esc(data.get("diary_time"))}</span>'
+           if data.get("diary_time") else "")
+        + '</h2>'
         f'<div class="diarytext">{_esc(diary)}</div></section>'
         if diary else ""
     )
@@ -485,10 +571,10 @@ def _pil_fallback(data: dict, out: Path) -> None:
 async def build_daily_png(out_dir: Path, period: str = "早报") -> Path:
     sixty, world, it, weibo, bili, hol, quote = await asyncio.gather(
         fetch_sixty(),
-        fetch_newsnow("cankaoxiaoxi"),
-        fetch_newsnow("ithome"),
+        fetch_newsnow("cankaoxiaoxi", 6, ("zaobao",)),
+        fetch_newsnow("ithome", 6, ("sspai", "solidot", "hackernews")),
         fetch_weibo(),
-        fetch_newsnow("bilibili"),
+        fetch_bilibili(),
         next_holiday(),
         fetch_quote(),
     )
@@ -509,6 +595,7 @@ async def build_daily_png(out_dir: Path, period: str = "早报") -> Path:
             if when and when >= fresh:
                 updates.append((name, f"最近提交 · {when}"))
 
+    diary, diary_time = load_diary_info() if period != "早报" else ("", "")
     data = {
         "period": period,
         "tip": quote or str(sixty.get("tip") or ""),
@@ -520,7 +607,8 @@ async def build_daily_png(out_dir: Path, period: str = "早报") -> Path:
         "holiday": hol,
         "almanac": almanac_info(),
         "weekend": weekend_days(),
-        "diary": load_diary() if period != "早报" else "",
+        "diary": diary,
+        "diary_time": diary_time,
         "age_days": load_age_days(),
         "updates": updates,
     }
