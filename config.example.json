@@ -257,5 +257,18 @@
   "tts_fallback_sapi": true,
   "reply_max_bubbles": 2,
   "reply_split_chance": 0.35,
-  "task_concurrency": 4
+  "task_concurrency": 4,
+  "world_daily_enabled": true,
+  "world_daily_time": "10:30",
+  "world_topics": [
+    "鲸鱼与海洋生物",
+    "深海生态",
+    "人工智能",
+    "大语言模型",
+    "太空探索",
+    "动物行为",
+    "气候变化与海洋"
+  ],
+  "world_max_pages": 3,
+  "world_max_facts": 5
 }
