@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "default": "quote",
+  "templates": [
+    {
+      "id": "quote",
+      "name": "小鲸鱼说",
+      "kind": "quote",
+      "character": "assets/community/q_c49_halfbody.jpg",
+      "accent": "#6EA8FF",
+      "bubble": "#F7F3EA",
+      "text": "#1B2540",
+      "keywords": ["语录", "说", "quote", "定制图", "做张图"]
+    },
+    {
+      "id": "meme",
+      "name": "表情包字幕",
+      "kind": "meme",
+      "character": "assets/community/q_c12_smile.jpg",
+      "keywords": ["表情包", "meme", "梗图", "配字"]
+    },
+    {
+      "id": "achievement",
+      "name": "成就卡",
+      "kind": "achievement",
+      "character": "assets/community/q_c50_heart.jpg",
+      "accent": "#F0C46A",
+      "keywords": ["成就", "达成", "里程碑"]
+    },
+    {
+      "id": "edit",
+      "name": "改图加字",
+      "kind": "edit_text",
+      "keywords": ["改图", "加字", "字幕"]
+    }
+  ]
+}
