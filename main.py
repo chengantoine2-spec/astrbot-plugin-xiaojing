@@ -310,6 +310,7 @@ SHOT_MARK_RE = re.compile(r"\[\[SHOT[:：]\s*(https?://[^\]\s]+)\s*\]\]", re.I)
 SELFIE_MARK_RE = re.compile(r"\[\[SELFIE(?::[^\]]*)?\]\]", re.I)
 CARD_MARK_RE = re.compile(r"\[\[CARD(?:[:：]\s*([^\]]+))?\]\]", re.I)
 OCR_MARK_RE = re.compile(r"\[\[OCR\]\]", re.I)
+VOICE_MARK_RE = re.compile(r"\[\[VOICE(?:[:：]\s*([^\]]+))?\]\]", re.I)
 VIDEO_MARK_RE = re.compile(r"\[\[VIDEO(?:[:：]\s*(https?://[^\]\s]+))?\s*\]\]", re.I)
 CARD_REF_RE = re.compile(
     r"(?:看|看看|看下|看一下|解析|总结|讲讲|说说|评价|分析).{0,8}"
@@ -596,6 +597,8 @@ class Main(star.Star):
             "- [[IMG:具体描述]] 配图或表情包（对方要图、或此刻用图更自然时）"
             "- [[CARD:模板|文字]] 做一张定制图（quote 语录卡 / meme 表情包 / achievement 成就卡 / list 清单卡 / compare 对比卡 / timeline 时间线 / edit 改图加字）；模板可省略，文字不超过 60 字。"
             "- [[OCR]] 读当前图/引用图里的文字（截图、报错、表格时）"
+            "- [[VOICE:短句]] 用语音说这句话（安慰、晚安、撒娇、短情绪句；技术、长文、报错不用）"
+            "语音是偶尔的亲密表达，不要每条都用；对方明确要语音时优先。"
             "[[IMG]] 的描述要短，不超过 20 字；不要复制上一段画面描述或整句需求。"
             "[[IMG]] 只是从网上找现成图片/表情包，不是画画。"
             "【图片表达总则】文字不如一张图时，主动做图：情绪/吐槽用 meme，观点/总结用 quote，里程碑用 achievement，指图/改图用 edit；问你在干嘛用 [[SELFIE]]，要证据用 [[SHOT]]/视频帧。先判断对方需要，不要为发图而发图；图要匹配时间、场景和形象，不伪造证据。"
@@ -5358,6 +5361,29 @@ class Main(star.Star):
             return text, False
         return clean_marker_residue(OCR_MARK_RE.sub("", text)), True
 
+    @staticmethod
+    def _take_voice_marker(text: str) -> tuple[str, str | None]:
+        m = VOICE_MARK_RE.search(text or "")
+        if not m:
+            return text, None
+        spec = (m.group(1) or "").strip()
+        return clean_marker_residue(VOICE_MARK_RE.sub("", text)), spec
+
+    async def _resolve_voice_marker(self, reply: str, event) -> tuple[str, bool]:
+        reply, voice_text = self._take_voice_marker(reply)
+        if voice_text is None:
+            return reply, False
+        explicit = bool(voice_text)
+        text_to_say = voice_text or reply.strip()
+        if not text_to_say:
+            return reply, False
+        ok = await self._send_voice(event, text_to_say)
+        if not explicit:
+            reply = "" if ok else text_to_say
+        elif not reply.strip():
+            reply = "" if ok else text_to_say
+        return reply, ok
+
     async def _apply_ocr_marker(self, reply: str, event) -> str:
         reply, mark = self._take_ocr_marker(reply)
         if not mark:
@@ -6738,6 +6764,10 @@ class Main(star.Star):
                     reply = await self._share_music(event, song, reply, text)
             reply = await self._verify_reply(text, reply, event.unified_msg_origin)
             reply = clean_marker_residue(self._fix_address(reply, uid))
+            reply, _voice_ok = await self._resolve_voice_marker(reply, event)
+            if not reply and not img_url and not img_data and not sticker:
+                self._stop(event)
+                return
             if reply or img_url or sticker:
                 if await self._send_chat(event, reply, img_url, img_data, sticker):
                     _sess = f"{event.unified_msg_origin}#{uid}"
@@ -6935,6 +6965,10 @@ class Main(star.Star):
             return
 
         reply = clean_marker_residue(self._fix_address(reply, uid))
+        reply, _voice_ok = await self._resolve_voice_marker(reply, event)
+        if not reply and not img_url and not img_data and not sticker:
+            self._stop(event)
+            return
         chain = self._maybe_decorate(reply, img_url, img_data, sticker)
         if await self._send(event, chain, event.unified_msg_origin):
             self._last_bot_reply = time.time()
@@ -7518,6 +7552,10 @@ class Main(star.Star):
 
         reply = await self._verify_reply(text, reply, event.unified_msg_origin)
         reply = clean_marker_residue(self._fix_address(reply, uid))
+        reply, _voice_ok = await self._resolve_voice_marker(reply, event)
+        if not reply and not img_url and not img_data and not sticker:
+            self._stop(event)
+            return
         if await self._send_chat(event, reply, img_url, img_data, sticker):
             self._remember(event.unified_msg_origin, text, reply)
             self._hot_add(event.unified_msg_origin, text, reply)
