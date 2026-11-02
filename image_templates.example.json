@@ -10,14 +10,27 @@
       "accent": "#6EA8FF",
       "bubble": "#F7F3EA",
       "text": "#1B2540",
-      "keywords": ["语录", "说", "quote", "定制图", "做张图"]
+      "keywords": [
+        "语录",
+        "说",
+        "quote",
+        "定制图",
+        "做张图"
+      ],
+      "when": "观点、总结、台词"
     },
     {
       "id": "meme",
       "name": "表情包字幕",
       "kind": "meme",
       "character": "assets/community/q_c12_smile.jpg",
-      "keywords": ["表情包", "meme", "梗图", "配字"]
+      "keywords": [
+        "表情包",
+        "meme",
+        "梗图",
+        "配字"
+      ],
+      "when": "情绪、吐槽、反应"
     },
     {
       "id": "achievement",
@@ -25,13 +38,23 @@
       "kind": "achievement",
       "character": "assets/community/q_c50_heart.jpg",
       "accent": "#F0C46A",
-      "keywords": ["成就", "达成", "里程碑"]
+      "keywords": [
+        "成就",
+        "达成",
+        "里程碑"
+      ],
+      "when": "里程碑、完成"
     },
     {
       "id": "edit",
       "name": "改图加字",
       "kind": "edit_text",
-      "keywords": ["改图", "加字", "字幕"]
+      "keywords": [
+        "改图",
+        "加字",
+        "字幕"
+      ],
+      "when": "给现有图加字"
     }
   ]
 }

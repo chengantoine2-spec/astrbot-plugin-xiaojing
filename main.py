@@ -556,9 +556,10 @@ class Main(star.Star):
             "- [[REPORT:早报|晚报]] 发日报长图（对方要日报、今天新闻汇总、早报/晚报时）"
             "- [[HISTORY:关键词或最近]] 查这个会话最近的聊天记录（对方问之前说过什么、群里发生过什么时）"
             "- [[IMG:具体描述]] 配图或表情包（对方要图、或此刻用图更自然时）"
-            "- [[CARD:模板|文字]] 做一张定制图（quote 语录卡 / meme 表情包 / achievement 成就卡）；模板可省略，文字不超过 60 字。"
+            "- [[CARD:模板|文字]] 做一张定制图（quote 语录卡 / meme 表情包 / achievement 成就卡 / edit 改图加字）；模板可省略，文字不超过 60 字。"
             "[[IMG]] 的描述要短，不超过 20 字；不要复制上一段画面描述或整句需求。"
             "[[IMG]] 只是从网上找现成图片/表情包，不是画画。"
+            "【图片表达总则】文字不如一张图时，主动做图：情绪/吐槽用 meme，观点/总结用 quote，里程碑用 achievement，指图/改图用 edit；问你在干嘛用 [[SELFIE]]，要证据用 [[SHOT]]/视频帧。先判断对方需要，不要为发图而发图；图要匹配时间、场景和形象，不伪造证据。"
             "轻松聊天时，大约每 6-8 条回复可以主动用一次 [[CARD:meme|短句]] 或 [[IMG:描述]]；不要连续刷图，严肃、技术、报错时不用。"
             "你会画简笔画、像素画和简单图标（猫/鲸鱼/人/心/星星/花/太阳/云/房子/树/蘑菇/笑脸）；"
             "也能找一张参考图，做成描边、铅笔、像素、海报或剪影风。"
@@ -581,6 +582,18 @@ class Main(star.Star):
             "被要求唱歌时别推说唱不了，直接递原曲并聊它；想哼就引一句歌词。"
             "你确实能发网易云卡片，别说自己没有音乐库、发不了歌。"
         )
+        try:
+            tpls = image_studio.templates()
+            if tpls:
+                catalog = "；".join(
+                    f"{t.get('id')}={t.get('name')}（{t.get('when') or '通用'}）"
+                    for t in tpls if t.get("id")
+                )
+                if catalog:
+                    rules += ("\n【图片工坊模板】" + catalog +
+                              "。需要时写 [[CARD:模板|文字]]，文字不超过 60 字。")
+        except Exception:
+            pass
         ctx = [self._env_line()]
         for line in (self._prefs_line(), self._site_line(), self._mood_line(), self._birthday_line(),
                      self._home_line(),
