@@ -147,5 +147,4 @@ def compare_images(a: bytes, b: bytes, labels=("A", "B"), title: str = "对比")
         canvas.paste(im, (x, y), im)
         d.text((x + panel_w // 2, y + panel_h + 14), str(label)[:20],
                font=_font(24, True), fill=(150, 200, 255), anchor="ma")
-    canvas.save(io.BytesIO(), "PNG")
     return _out(canvas)

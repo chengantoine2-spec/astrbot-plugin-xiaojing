@@ -44,6 +44,10 @@ except Exception:
 from astrbot.api import logger, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Face, Image, Plain, Video
+try:
+    from astrbot.api.message_components import Record
+except Exception:
+    Record = None
 from astrbot.core.message.message_event_result import MessageChain
 
 try:
@@ -87,6 +91,11 @@ except Exception:
     import image_edit
 
 try:
+    from . import voice_tools
+except Exception:
+    import voice_tools
+
+try:
     from .netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
 except Exception:
     from netease_cookie import bind_status as netease_status, load_cookie as netease_cookie
@@ -124,6 +133,8 @@ IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
+FACTS_PATH = MEM_DIR / "facts.json"
+PEOPLE_PATH = MEM_DIR / "people.json"
 MEM_DIR.mkdir(parents=True, exist_ok=True)
 DIARY_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -201,6 +212,7 @@ DEFAULTS = {
     "proactive_min_gap_minutes": 45,
     "proactive_quiet_start": "23:00",
     "proactive_quiet_end": "08:00",
+    "voice_enabled": True,
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -536,15 +548,16 @@ class Main(star.Star):
         return "、".join(names)
 
     def _who_line(self, uid: str, name: str) -> str:
+        extra = self._people_line(uid)
         owners = [str(x) for x in self.cfg.get("owner_ids", [])]
         if uid in owners:
             owner_name = str(self.cfg.get("owner_name") or "").strip()
             who = f"爸爸{owner_name}" if owner_name else "爸爸"
-            return f"当前说话人：「{name}」（QQ {uid}），他是你的{who}，可以叫他爸爸。"
+            return f"当前说话人：「{name}」（QQ {uid}），他是你的{who}，可以叫他爸爸。" + extra
         title = (self._titles.get(uid) or ("朋友", 0))[0]
         return (
             f"当前说话人：「{name}」（QQ {uid}），他是你的{title}，称呼他「{title}」；"
-            "他不是你爸爸，绝对不要叫他爸爸或 daddy。"
+            "他不是你爸爸，绝对不要叫他爸爸或 daddy。" + extra
         )
 
     def _persona(self) -> str:
@@ -720,6 +733,61 @@ class Main(star.Star):
             self.cfg["home_selfie_style"] = "pixel"
             self._save_cfg()
             self._reply(event, "好，以后默认用像素自拍。")
+            return True
+        if core.startswith(("语音", "说一句", "念一下")):
+            content = re.sub(r"^(语音|说一句|念一下)", "", core).strip(" ：:，,。")
+            if not content:
+                content = "在的，我在。"
+            ok = await self._send_voice(event, content)
+            if not ok:
+                await self._reply(event, "这次没发出声音……我先用文字说：在的。")
+            return True
+        if core in ("记忆", "看看记忆", "记忆状态"):
+            facts = self._facts_state().get("facts", [])
+            people = self._people_state().get("people", {})
+            lines = [f"长期事实 {len(facts)} 条，人物 {len(people)} 个。"]
+            for f in facts[-8:]:
+                lines.append(f"- [{f.get('kind')}] {f.get('text')}")
+            if len(lines) == 1:
+                lines.append("还没有记住什么。")
+            await self._send(event, self._maybe_decorate("\n".join(lines)[:1500]),
+                             event.unified_msg_origin)
+            return True
+        if core.startswith(("忘记", "忘掉")):
+            key = re.sub(r"^(忘记|忘掉)", "", core).strip(" ：:，,。")
+            if not key:
+                await self._reply(event, "要忘记什么？给我一个关键词。")
+                return True
+            state = self._facts_state()
+            arr = state.get("facts", [])
+            keep = [f for f in arr if key not in str(f.get("text") or "")]
+            removed = len(arr) - len(keep)
+            state["facts"] = keep
+            self._facts_save()
+            pstate = self._people_state()
+            for p in pstate.get("people", {}).values():
+                notes = p.get("notes") or []
+                p["notes"] = [x for x in notes if key not in str(x)]
+            self._people_save()
+            await self._reply(event, f"忘了 {removed} 条和「{key}」有关的事。")
+            return True
+        if core.startswith("记住"):
+            content = re.sub(r"^记住", "", core).strip(" ：:，,。")
+            if not content:
+                await self._reply(event, "要记住什么？说具体一点。")
+                return True
+            state = self._facts_state()
+            arr = state.setdefault("facts", [])
+            arr.append({
+                "kind": "note", "text": content[:120], "kw": self._kw(content),
+                "ts": int(time.time()), "confidence": 1.0,
+                "uid": uid, "session": event.unified_msg_origin,
+                "name": event.get_sender_name() or "",
+            })
+            state["facts"] = arr[-300:]
+            self._facts_save()
+            self._people_touch(uid, event.get_sender_name() or "", note=content)
+            await self._reply(event, "记住了。")
             return True
         if re.match(r"^(?:小鲸鱼?|小鲸)?[\s，,]*?(?:看|解析|总结)?视频", t):
             src, local = await self._resolve_video_source(event, t)
@@ -3507,6 +3575,21 @@ class Main(star.Star):
             return ["".join(parts[:mid]), "".join(parts[mid:])]
         return parts
 
+    async def _send_voice(self, event, text: str) -> bool:
+        if not self.cfg.get("voice_enabled", True) or Record is None:
+            return False
+        fp = await asyncio.to_thread(voice_tools.synthesize, text)
+        if not fp:
+            return False
+        ok = await self._send(
+            event,
+            MessageChain(chain=[Record(file=str(fp))]),
+            getattr(event, "unified_msg_origin", self._umo),
+        )
+        if ok:
+            logger.info(f"[小鲸] 语音已发送：{fp.name}")
+        return ok
+
     async def _send_chat(self, event, text, img_url=None, img_data=None, sticker=None,
                          force_image: bool = False) -> bool:
         text = clean_marker_residue(text)
@@ -4239,6 +4322,15 @@ class Main(star.Star):
     async def _learn_feedback(self, event: AstrMessageEvent, text: str, uid: str) -> None:
         """看上一轮之后用户的正负反馈，调整她对那个话题的好恶。"""
         self._feedback_reaction(text, event.unified_msg_origin)
+        await self._extract_facts(event, text, uid)
+        try:
+            name = event.get_sender_name() or ""
+        except Exception:
+            name = ""
+        if any(k in (text or "") for k in ("谢谢", "喜欢你", "可爱", "好听", "厉害", "哈哈")):
+            self._people_touch(uid, name, 1)
+        elif any(k in (text or "") for k in ("讨厌", "烦", "滚", "闭嘴", "别吵")):
+            self._people_touch(uid, name, -1)
         last = self._last_topic.get(uid)
         if not last:
             return
@@ -4337,6 +4429,147 @@ class Main(star.Star):
         )
         return bool(verdict.get("self"))
 
+    def _facts_state(self) -> dict:
+        if not hasattr(self, "_facts_data"):
+            self._facts_data = {"facts": []}
+            try:
+                if FACTS_PATH.exists():
+                    data = json.loads(FACTS_PATH.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and isinstance(data.get("facts"), list):
+                        self._facts_data = data
+            except Exception:
+                pass
+        return self._facts_data
+
+    def _facts_save(self) -> None:
+        try:
+            FACTS_PATH.write_text(
+                json.dumps(self._facts_state(), ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _people_state(self) -> dict:
+        if not hasattr(self, "_people_data"):
+            self._people_data = {"people": {}}
+            try:
+                if PEOPLE_PATH.exists():
+                    data = json.loads(PEOPLE_PATH.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and isinstance(data.get("people"), dict):
+                        self._people_data = data
+            except Exception:
+                pass
+        return self._people_data
+
+    def _people_save(self) -> None:
+        try:
+            PEOPLE_PATH.write_text(
+                json.dumps(self._people_state(), ensure_ascii=False, indent=1),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _people_touch(self, uid: str, name: str = "", affinity: int = 0,
+                      note: str = "") -> None:
+        uid = str(uid or "")
+        if not uid:
+            return
+        state = self._people_state()
+        p = state.setdefault("people", {}).setdefault(
+            uid, {"name": "", "affinity": 0, "notes": [], "last_seen": 0})
+        if name:
+            p["name"] = str(name)[:40]
+        p["last_seen"] = int(time.time())
+        if affinity:
+            p["affinity"] = max(-20, min(50, int(p.get("affinity", 0)) + int(affinity)))
+        if note:
+            notes = p.setdefault("notes", [])
+            if note not in notes:
+                notes.append(str(note)[:120])
+            p["notes"] = notes[-8:]
+        self._people_save()
+
+    def _people_line(self, uid: str) -> str:
+        p = self._people_state().get("people", {}).get(str(uid or ""))
+        if not isinstance(p, dict):
+            return ""
+        bits = []
+        notes = [str(x) for x in (p.get("notes") or []) if str(x).strip()]
+        if notes:
+            bits.append("你记得：" + "；".join(notes[-3:]))
+        aff = int(p.get("affinity") or 0)
+        if aff:
+            bits.append(f"好感度 {aff:+d}")
+        return ("\n[你对他的了解] " + "；".join(bits)) if bits else ""
+
+    async def _extract_facts(self, event, text: str, uid: str) -> None:
+        """从明确语句里提取长期事实；带关键词门和 90 秒冷却。"""
+        t = str(text or "").strip()
+        cues = ("我喜欢", "我不喜欢", "我讨厌", "记住", "答应", "我的生日",
+                "我叫", "我住在", "我在做", "我最喜欢", "别忘", "对了我")
+        if len(t) < 4 or not any(k in t for k in cues):
+            return
+        now = time.time()
+        if not hasattr(self, "_last_fact_extract"):
+            self._last_fact_extract: dict[str, float] = {}
+        if now - self._last_fact_extract.get(str(uid), 0) < 90:
+            return
+        self._last_fact_extract[str(uid)] = now
+        try:
+            data = await self._chat_json(
+                "从这句话里提取值得长期记住的、关于对方的事实。只输出 JSON："
+                '{"facts":[{"kind":"preference|identity|event|promise|boundary",'
+                '"text":"一句中文事实","confidence":0.0}]}。'
+                "没有就输出 {\"facts\":[]}。不要提取寒暄、临时状态、密码/Token/身份证/银行卡等敏感信息。"
+                f"\n他说：{t[:300]}",
+                kind="fact",
+            )
+        except Exception:
+            return
+        items = data.get("facts") if isinstance(data.get("facts"), list) else []
+        state = self._facts_state()
+        arr = state.setdefault("facts", [])
+        name = ""
+        try:
+            name = event.get_sender_name() or ""
+        except Exception:
+            pass
+        session = ""
+        try:
+            session = event.unified_msg_origin
+        except Exception:
+            pass
+        added = 0
+        for item in items[:2]:
+            if not isinstance(item, dict):
+                continue
+            fact = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()[:120]
+            if not fact or any(k in fact for k in ("密码", "token", "Token", "身份证", "银行卡", "手机号")):
+                continue
+            norm = re.sub(r"\s+", "", fact)
+            if any(re.sub(r"\s+", "", str(x.get("text") or "")) == norm for x in arr):
+                continue
+            kind = str(item.get("kind") or "event").lower()
+            if kind not in ("preference", "identity", "event", "promise", "boundary"):
+                kind = "event"
+            try:
+                conf = max(0.0, min(1.0, float(item.get("confidence") or 0)))
+            except Exception:
+                conf = 0.0
+            arr.append({
+                "kind": kind, "text": fact, "kw": self._kw(fact),
+                "ts": int(now), "confidence": conf, "uid": str(uid or ""),
+                "session": session, "name": name,
+            })
+            self._people_touch(uid, name, note=fact)
+            added += 1
+        if added:
+            state["facts"] = arr[-300:]
+            self._facts_save()
+            logger.info(f"[小鲸] 记住事实 {added} 条（{uid}）")
+
     def _mem_state_path(self, session_id: str) -> Path:
         safe = re.sub(r"[^0-9A-Za-z_-]+", "_", session_id)[:80] or "default"
         return MEM_DIR / f"mem_{safe}.json"
@@ -4411,6 +4644,22 @@ class Main(star.Star):
             if picked:
                 lines.append("[更早的事]")
                 lines.extend(f"- {x['summary']}" for x in picked)
+
+        # 事实记忆：按相关度 + 置信度 + 同一用户加权
+        facts = self._facts_state().get("facts", [])
+        uid = session_id.split("#")[-1] if "#" in str(session_id) else ""
+        scored = []
+        for f in facts:
+            kw = set(f.get("kw") or [])
+            same = bool(uid and (str(f.get("uid") or "") == uid or uid in str(session_id)))
+            score = len(qkw & kw) + float(f.get("confidence") or 0) * 2 + (2 if same else 0)
+            if score > 0:
+                scored.append((score, f.get("ts", 0), f))
+        picked = [f for _s, _t, f in sorted(
+            scored, key=lambda x: (x[0], x[1]), reverse=True)[:5]]
+        if picked:
+            lines.append("[关于他的长期事实]")
+            lines.extend(f"- {f.get('text')}" for f in reversed(picked))
 
         if not lines:
             return ""

@@ -235,5 +235,15 @@
       "(ﾉ≧∀≦)ﾉ",
       "☆*:.｡.o(≧▽≦)o.｡.:*☆"
     ]
-  }
+  },
+  "home_selfie_style": "premium",
+  "home_selfie_form": "q",
+  "image_budget_per_10min": 4,
+  "image_cooldown_seconds": 45,
+  "image_dedupe_minutes": 30,
+  "proactive_daily_cap": 6,
+  "proactive_min_gap_minutes": 45,
+  "proactive_quiet_start": "23:00",
+  "proactive_quiet_end": "08:00",
+  "voice_enabled": true
 }
