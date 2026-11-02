@@ -245,5 +245,14 @@
   "proactive_min_gap_minutes": 45,
   "proactive_quiet_start": "23:00",
   "proactive_quiet_end": "08:00",
-  "voice_enabled": true
+  "voice_enabled": true,
+  "tts_provider": "sapi",
+  "tts_sapi_voice": "Microsoft Huihui Desktop",
+  "tts_base": "",
+  "tts_key": "",
+  "tts_model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "tts_api_voice": "Vivian",
+  "tts_language": "Chinese",
+  "tts_instruct": "",
+  "tts_fallback_sapi": true
 }

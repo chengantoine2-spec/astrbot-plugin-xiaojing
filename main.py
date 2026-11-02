@@ -214,6 +214,15 @@ DEFAULTS = {
     "proactive_quiet_start": "23:00",
     "proactive_quiet_end": "08:00",
     "voice_enabled": True,
+    "tts_provider": "sapi",
+    "tts_sapi_voice": "Microsoft Huihui Desktop",
+    "tts_base": "",
+    "tts_key": "",
+    "tts_model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "tts_api_voice": "Vivian",
+    "tts_language": "Chinese",
+    "tts_instruct": "",
+    "tts_fallback_sapi": True,
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -769,6 +778,18 @@ class Main(star.Star):
             self.cfg["home_selfie_style"] = "pixel"
             self._save_cfg()
             self._reply(event, "好，以后默认用像素自拍。")
+            return True
+        if core in ("音色", "声音", "tts", "TTS"):
+            provider = str(self.cfg.get("tts_provider") or "sapi")
+            if provider == "sapi":
+                voice = str(self.cfg.get("tts_sapi_voice") or "Microsoft Huihui Desktop")
+            else:
+                voice = str(self.cfg.get("tts_api_voice") or "Vivian")
+            await self._reply(
+                event,
+                f"当前音色：{provider} / {voice}。\n"
+                "角色声线：清亮偏软的少女音，句尾轻微上扬；认真时吐字干脆，不御姐、不播音腔。",
+            )
             return True
         if core.startswith(("语音", "说一句", "念一下")):
             content = re.sub(r"^(语音|说一句|念一下)", "", core).strip(" ：:，,。")
@@ -3614,7 +3635,7 @@ class Main(star.Star):
     async def _send_voice(self, event, text: str) -> bool:
         if not self.cfg.get("voice_enabled", True) or Record is None:
             return False
-        fp = await asyncio.to_thread(voice_tools.synthesize, text)
+        fp = await asyncio.to_thread(voice_tools.synthesize_auto, text, self.cfg)
         if not fp:
             return False
         ok = await self._send(
