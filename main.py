@@ -1319,7 +1319,7 @@ class Main(star.Star):
             except Exception:
                 pass
             try:
-                keys.append(f"sender:{event.get_sender_id()}")
+                keys.append(f"sender:{self._image_scope(event)}:{event.get_sender_id()}")
             except Exception:
                 pass
             for key in keys:
@@ -2189,7 +2189,7 @@ class Main(star.Star):
         except Exception:
             pass
         try:
-            skey = f"sender:{event.get_sender_id()}"
+            skey = f"sender:{self._image_scope(event)}:{event.get_sender_id()}"
         except Exception:
             pass
         now = time.time()
@@ -3766,6 +3766,19 @@ class Main(star.Star):
         except Exception:
             return "0"
 
+    def _image_scope(self, event: AstrMessageEvent) -> str:
+        """图片兜底缓存作用域：群聊按群，私聊按人，避免跨群串图。"""
+        try:
+            gid = self._gid(event)
+        except Exception:
+            gid = "0"
+        if gid and gid != "0":
+            return f"g:{gid}"
+        try:
+            return f"p:{event.get_sender_id()}"
+        except Exception:
+            return "unknown"
+
     @staticmethod
     def _at_other(event: AstrMessageEvent) -> bool:
         self_id = str(event.get_self_id())
@@ -5027,7 +5040,7 @@ class Main(star.Star):
         except Exception:
             pass
         try:
-            skey = f"sender:{event.get_sender_id()}"
+            skey = f"sender:{self._image_scope(event)}:{event.get_sender_id()}"
         except Exception:
             pass
         raw = []
