@@ -52,9 +52,9 @@ except Exception:
 from astrbot.core.message.message_event_result import MessageChain
 
 try:
-    from .report import build_daily_png
+    from .report import build_daily_png, prune_reports
 except Exception:
-    from report import build_daily_png
+    from report import build_daily_png, prune_reports
 
 try:
     from .home_scene import render_home_scene
@@ -80,6 +80,11 @@ try:
     from . import video_notes
 except Exception:
     import video_notes
+
+try:
+    from . import video_reader as video_reader_mod
+except Exception:
+    import video_reader as video_reader_mod
 
 try:
     from . import image_tools
@@ -152,7 +157,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.5"
+BUILD = "1.3.6"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -265,6 +270,8 @@ DEFAULTS = {
     "world_doc_chars": 5000,
     "world_daily_topics": 2,
     "world_daily_token_budget": 300000,
+    "report_keep_days": 7,
+    "report_keep_max": 20,
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -272,6 +279,7 @@ DEFAULTS = {
     "video_asr_model": "small",
     "video_asr_language": "",
     "video_cache_days": 7,
+    "video_cache_max": 40,
     "bilibili_sessdata": "",
     "sticker_idle_chance": 0.28,
     "sticker_cache_days": 7,
@@ -755,10 +763,11 @@ class Main(star.Star):
                               "。需要时写 [[CARD:模板|文字]]，文字不超过 60 字。")
         except Exception:
             pass
+        self_note = self._self_note()
         ctx = [self._env_line()]
         for line in (self._prefs_line(), self._site_line(), self._mood_line(), self._birthday_line(),
                      self._home_line(),
-                     ("\n[你对自己的认识] " + self._self_note()) if self._self_note() else "",
+                     ("\n[你对自己的认识] " + self_note) if self_note else "",
                      self._self_hint(), self._diary_hint()):
             if line:
                 ctx.append(line)
@@ -7766,7 +7775,9 @@ class Main(star.Star):
                            scheduled: bool = False) -> bool:
         if fp is None:
             try:
-                fp = await build_daily_png(DATA_DIR / "reports", period)
+                keep_days, keep_max = self._report_keep_args()
+                fp = await build_daily_png(DATA_DIR / "reports", period,
+                                           keep_days=keep_days, keep_max=keep_max)
             except Exception as e:
                 logger.error(f"[小鲸] 日报生成失败：{e}")
                 return False
@@ -7952,6 +7963,17 @@ class Main(star.Star):
         logger.info(f"[小鲸] 日报配乐 {'已发送' if ok else '发送失败'}：《{name}》")
         return ok
 
+    def _report_keep_args(self) -> tuple[int, int]:
+        try:
+            days = max(1, min(60, int(self.cfg.get("report_keep_days", 7) or 7)))
+        except Exception:
+            days = 7
+        try:
+            cap = max(0, min(200, int(self.cfg.get("report_keep_max", 20) or 20)))
+        except Exception:
+            cap = 20
+        return days, cap
+
     async def _report_loop(self):
         await asyncio.sleep(20)
         while True:
@@ -8003,7 +8025,9 @@ class Main(star.Star):
                         if not (isinstance(fp, Path) and fp.exists()):
                             if period == "晚报":
                                 await self._write_diary()
-                            fp = await build_daily_png(DATA_DIR / "reports", period)
+                            keep_days, keep_max = self._report_keep_args()
+                            fp = await build_daily_png(DATA_DIR / "reports", period,
+                                                       keep_days=keep_days, keep_max=keep_max)
                             cache[cache_key] = fp
                     except Exception as e:
                         logger.error(f"[小鲸] {period} 生成失败：{e}")
@@ -8026,6 +8050,23 @@ class Main(star.Star):
 
     @filter.on_astrbot_loaded()
     async def _start_report_loop(self):
+        try:
+            keep_days, keep_max = self._report_keep_args()
+            removed = prune_reports(DATA_DIR / "reports",
+                                    keep_days=keep_days, keep_max=keep_max)
+            if removed:
+                logger.info(f"[小鲸] 日报缓存清理 {removed} 张")
+        except Exception as e:
+            logger.info(f"[小鲸] 日报缓存清理失败：{e}")
+        try:
+            removed = video_reader_mod.prune_cache(
+                days=int(self.cfg.get("video_cache_days", 7) or 7),
+                max_items=int(self.cfg.get("video_cache_max", 40) or 40),
+            )
+            if removed:
+                logger.info(f"[小鲸] 视频缓存清理 {removed} 条")
+        except Exception as e:
+            logger.info(f"[小鲸] 视频缓存清理失败：{e}")
         if getattr(self, "_report_task", None) is None:
             self._report_task = asyncio.create_task(self._report_loop())
             logger.info("[小鲸] 日报调度已启动")

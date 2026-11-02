@@ -568,7 +568,9 @@ def _pil_fallback(data: dict, out: Path) -> None:
     img.save(out, "PNG")
 
 
-async def build_daily_png(out_dir: Path, period: str = "早报") -> Path:
+async def build_daily_png(out_dir: Path, period: str = "早报",
+                          keep_days: int = 7, keep_max: int = 20) -> Path:
+    prune_reports(out_dir, keep_days=keep_days, keep_max=keep_max)
     sixty, world, it, weibo, bili, hol, quote = await asyncio.gather(
         fetch_sixty(),
         fetch_newsnow("cankaoxiaoxi", 6, ("zaobao",)),
@@ -622,3 +624,54 @@ async def build_daily_png(out_dir: Path, period: str = "早报") -> Path:
         await asyncio.sleep(2)
     _pil_fallback(data, fp)
     return fp
+
+
+REPORT_RE = re.compile(r"daily_(\d{8})_(\d{4})_(am|pm)\.png$", re.I)
+
+
+def prune_reports(out_dir: Path, keep_days: int = 7, keep_max: int = 20) -> int:
+    """日报图片保留策略：每天每时段只留最新一张，再按天数和总数裁剪。"""
+    try:
+        files = [p for p in out_dir.glob("daily_*.png") if p.is_file()]
+    except Exception:
+        return 0
+    if not files:
+        return 0
+    groups: dict[tuple[str, str], Path] = {}
+    for p in files:
+        m = REPORT_RE.match(p.name)
+        if not m:
+            continue
+        key = (m.group(1), m.group(3).lower())
+        old = groups.get(key)
+        try:
+            if old is None:
+                groups[key] = p
+            else:
+                old_m = REPORT_RE.match(old.name)
+                old_stamp = old_m.group(2) if old_m else ""
+                if (m.group(2), p.stat().st_mtime) > (old_stamp, old.stat().st_mtime):
+                    groups[key] = p
+        except Exception:
+            continue
+    cutoff = datetime.now(TZ).date() - timedelta(days=max(1, int(keep_days)) - 1)
+    keep: set[Path] = set()
+    for (day_s, _period), p in groups.items():
+        try:
+            day = datetime.strptime(day_s, "%Y%m%d").date()
+        except Exception:
+            continue
+        if day >= cutoff:
+            keep.add(p)
+    if keep_max and len(keep) > int(keep_max):
+        keep = set(sorted(keep, key=lambda x: x.stat().st_mtime, reverse=True)[:int(keep_max)])
+    removed = 0
+    for p in files:
+        if p in keep or not REPORT_RE.match(p.name):
+            continue
+        try:
+            p.unlink()
+            removed += 1
+        except Exception:
+            pass
+    return removed

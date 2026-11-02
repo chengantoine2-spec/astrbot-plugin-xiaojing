@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -390,6 +391,39 @@ def _save_cache(key: str, result: VideoResult) -> None:
         )
     except Exception:
         pass
+
+
+def prune_cache(days: int = 7, max_items: int = 40) -> int:
+    """清理过期/超量的视频缓存 JSON、媒体目录和关键帧。"""
+    try:
+        files = sorted(VIDEO_DIR.glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return 0
+    if not files:
+        return 0
+    keep = set(files[:max(1, int(max_items))]) if max_items and int(max_items) > 0 else set()
+    cutoff = time.time() - max(1, int(days)) * 86400
+    removed = 0
+    for fp in files:
+        try:
+            too_old = fp.stat().st_mtime < cutoff
+        except Exception:
+            too_old = True
+        if fp in keep and not too_old:
+            continue
+        key = fp.stem
+        try:
+            fp.unlink()
+            removed += 1
+        except Exception:
+            pass
+        for d in (VIDEO_DIR / key, FRAME_DIR / key):
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+    return removed
 
 
 async def process_bilibili(

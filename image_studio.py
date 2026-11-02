@@ -110,14 +110,23 @@ def _hex(value, default):
     return default
 
 
+_TEMPLATE_CACHE: dict = {"mtime": None, "data": None}
+
+
 def _load_templates() -> dict:
+    global _TEMPLATE_CACHE
     try:
+        mtime = TEMPLATES_PATH.stat().st_mtime if TEMPLATES_PATH.exists() else None
+        if _TEMPLATE_CACHE["data"] is not None and _TEMPLATE_CACHE["mtime"] == mtime:
+            return _TEMPLATE_CACHE["data"]
         if TEMPLATES_PATH.exists():
             data = json.loads(TEMPLATES_PATH.read_text(encoding="utf-8"))
             if isinstance(data, dict) and isinstance(data.get("templates"), list) and data["templates"]:
+                _TEMPLATE_CACHE = {"mtime": mtime, "data": data}
                 return data
     except Exception:
         pass
+    _TEMPLATE_CACHE = {"mtime": None, "data": DEFAULT_TEMPLATES}
     return DEFAULT_TEMPLATES
 
 

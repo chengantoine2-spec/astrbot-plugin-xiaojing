@@ -119,6 +119,8 @@
     "123456789"
   ],
   "report_music_kw": "晴天 周杰伦",
+  "report_keep_days": 7,
+  "report_keep_max": 20,
   "music_brand": "qq",
   "sticker_dir": "",
   "birthday": "2026-01-01",
@@ -154,6 +156,7 @@
   "video_asr_model": "small",
   "video_asr_language": "",
   "video_cache_days": 7,
+  "video_cache_max": 40,
   "bilibili_sessdata": "",
   "sticker_idle_chance": 0.28,
   "sticker_cache_days": 7,

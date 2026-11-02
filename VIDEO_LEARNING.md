@@ -53,6 +53,7 @@ B 站分享卡、引用视频、直接发视频文件也会触发。
   "video_asr_model": "small",
   "video_asr_language": "",
   "video_cache_days": 7,
+  "video_cache_max": 40,
   "bilibili_sessdata": ""
 }
 ```
@@ -61,6 +62,7 @@ B 站分享卡、引用视频、直接发视频文件也会触发。
 - `video_max_frames`：关键帧数量，越多视觉 token 越高
 - `video_asr_model`：`tiny` / `base` / `small`；CPU 上 small 较慢
 - `bilibili_sessdata`：可选，用于需要登录态的字幕/视频
+- `video_cache_max`：最多保留 40 条视频缓存；启动时清理超过 7 天或超量的缓存
 
 ## 边界
 
