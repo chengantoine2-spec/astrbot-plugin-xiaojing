@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-"""小鲸的像素卧室：3/4 上帝视角，540x720 内部画布，2x 最近邻输出。
+"""小鲸的像素卧室：3/4 上帝视角，540x720 内部画布。
 
+自拍走“局部取景 → 低分辨率量化 → 最近邻放大”的像素画流程；
 这个模块只负责“画”，不读写聊天状态。活动、心情、精力由 main.py 传入。
 """
 
@@ -336,9 +337,24 @@ def draw_chibi(d, cx, top, pose="stand", prop="", mood="开心", flip=False):
         d.rectangle([cx - 8, body_top + 27, cx - 4, body_top + 31], fill=RED)
         d.rectangle([cx + 4, body_top + 27, cx + 8, body_top + 31], fill=HAIR_LIGHT)
     elif prop == "book":
-        d.polygon([(cx - 14, body_top + 22), (cx + 2, body_top + 18), (cx + 14, body_top + 24),
-                   (cx - 2, body_top + 30)], fill=BLANKET_ALT, outline=OUTLINE)
-        d.line([cx - 2, body_top + 22, cx - 2, body_top + 30], fill=CREAM, width=1)
+        # 双页摊开的书：像素化后仍能读出“在看书”
+        d.polygon([(cx - 22, body_top + 19), (cx, body_top + 15), (cx + 22, body_top + 19),
+                   (cx, body_top + 33)], fill=BLANKET_ALT, outline=OUTLINE)
+        d.polygon([(cx - 18, body_top + 21), (cx - 2, body_top + 18),
+                   (cx - 2, body_top + 30), (cx - 18, body_top + 31)],
+                  fill=CREAM, outline=OUTLINE)
+        d.polygon([(cx + 2, body_top + 18), (cx + 18, body_top + 21),
+                   (cx + 18, body_top + 31), (cx + 2, body_top + 30)],
+                  fill=CREAM, outline=OUTLINE)
+        d.line([cx - 2, body_top + 18, cx - 2, body_top + 30], fill=WOOD_MID, width=2)
+        d.line([cx + 2, body_top + 18, cx + 2, body_top + 30], fill=WOOD_MID, width=2)
+        for px in (cx - 14, cx + 8):
+            d.line([px, body_top + 23, px + 6, body_top + 23], fill=CREAM_DARK, width=1)
+    elif prop == "papers":
+        # 整理书桌：手里一叠纸
+        d.rectangle([cx - 14, body_top + 22, cx + 14, body_top + 32], fill=CREAM, outline=OUTLINE)
+        d.rectangle([cx - 10, body_top + 18, cx + 10, body_top + 23], fill=CREAM_DARK, outline=OUTLINE)
+        d.line([cx - 9, body_top + 27, cx + 9, body_top + 27], fill=WOOD_MID, width=2)
     elif prop == "cola":
         d.rectangle([cx + 12, body_top + 18, cx + 24, body_top + 34], fill=RED, outline=OUTLINE)
         d.rectangle([cx + 12, body_top + 22, cx + 24, body_top + 25], fill=CREAM)
@@ -367,18 +383,110 @@ def draw_sleeping(d):
               fill=TAIL, outline=OUTLINE)
 
 
-def draw_hud(img, d, activity, mood, now, portrait_path):
-    # top bar
-    d.rectangle([0, 0, W, 46], fill=(14, 22, 40))
-    d.rectangle([0, 44, W, 46], fill=ACCENT)
-    _text(d, (16, 11), "小鲸的房间", 16, WHITE, True)
-    _text(d, (W - 16, 12), now, 14, CREAM, False, "ra")
-    # activity pill
-    d.rounded_rectangle([14, H - 58, 250, H - 16], radius=14, fill=(14, 22, 40), outline=ACCENT, width=2)
-    d.ellipse([26, H - 40, 34, H - 32], fill=ACCENT)
-    _text(d, (42, H - 48), f"在{activity}", 14, WHITE)
+# 像素自拍调色板：保持房间原色，但只允许这些颜色出现
+PIXEL_COLORS = (
+    OUTLINE, WALL, WALL_ALT, WAINSCOT, FLOOR, FLOOR_ALT, FLOOR_LINE,
+    WOOD_LIGHT, WOOD_MID, WOOD_DARK, CREAM, CREAM_DARK, BLANKET, BLANKET_ALT,
+    RUG, RUG_LIGHT, PILLOW, MOON, SEA, NIGHT_TOP, NIGHT_BOTTOM,
+    SKIN, SKIN_SHADE, HAIR, HAIR_LIGHT, HAIR_DARK, DRESS, DRESS_LIGHT,
+    APRON, TAIL, RED, YELLOW, GREEN, GREEN_DARK, CAT, CAT_DARK,
+    SCREEN, SCREEN_LIGHT, ACCENT, WHITE,
+    (255, 196, 110), (116, 176, 228), (176, 214, 242), (255, 224, 140),
+    (250, 250, 245), (72, 144, 184), (110, 180, 214), (255, 244, 214),
+    # 中性过渡色：避免深灰/暖灰被量化到绿色，产生描边绿边
+    (40, 44, 54), (52, 56, 66), (64, 68, 78), (78, 82, 92),
+    (92, 96, 106), (108, 112, 120), (70, 66, 62), (86, 82, 78),
+    (104, 100, 94), (122, 116, 108), (140, 134, 126), (156, 148, 138),
+)
 
-    # portrait
+# 自拍取景框：240x320，裁到角色附近，避免整间房显得人太小
+PIXEL_LOW = (180, 240)
+PIXEL_SCALE = 3
+
+
+def _palette_img(colors):
+    pal = Image.new("P", (1, 1))
+    flat = []
+    for c in colors:
+        flat.extend(tuple(c[:3]))
+    flat.extend([0, 0, 0] * (256 - len(colors)))
+    pal.putpalette(flat)
+    return pal
+
+
+def _pixelate(im, box, size=PIXEL_LOW, scale=PIXEL_SCALE):
+    crop = im.crop(box).convert("RGB")
+    small = crop.resize(size, Image.BOX)
+    small = small.quantize(palette=_palette_img(PIXEL_COLORS),
+                           dither=Image.Dither.NONE).convert("RGB")
+    return small.resize((size[0] * scale, size[1] * scale), Image.NEAREST)
+
+
+def _pixel_avatar(portrait_path, size=96):
+    try:
+        src = Image.open(portrait_path).convert("RGB")
+        tiny = src.crop((330, 80, 730, 480)).resize((size // 4, size // 4), Image.BOX)
+        tiny = tiny.quantize(palette=_palette_img(PIXEL_COLORS),
+                             dither=Image.Dither.NONE).convert("RGB")
+        return tiny.resize((size, size), Image.NEAREST)
+    except Exception:
+        return None
+
+
+def _pixel_z(d, x, y, size, color=WHITE):
+    t = max(3, size // 5)
+    for ox, oy, c in ((3, 3, OUTLINE), (0, 0, color)):
+        d.rectangle([x + ox, y + oy, x + ox + size, y + oy + t], fill=c)
+        d.rectangle([x + ox, y + oy + size - t, x + ox + size, y + oy + size], fill=c)
+        for i in range(4):
+            bx = x + ox + int((size - t) * (1 - i / 3))
+            by = y + oy + t + int((size - 2 * t) * (i / 3))
+            d.rectangle([bx, by, bx + t, by + t], fill=c)
+
+
+def _selfie_box(activity):
+    act = str(activity or "")
+    if act in ("睡觉", "趴床"):
+        return (90, 120, 450, 600)
+    if act in ("写日记", "整理书桌"):
+        return (150, 280, 390, 600)
+    if act == "喝可乐":
+        return (8, 348, 248, 668)
+    if act == "撸猫":
+        return (120, 400, 360, 720)
+    return (170, 400, 410, 720)
+
+
+def draw_hud(img, d, activity, mood, now, portrait_path, pixel=True):
+    # top bar
+    d.rectangle([0, 0, W, 44], fill=(14, 22, 40))
+    d.rectangle([0, 42, W, 44], fill=ACCENT)
+    _text(d, (14, 10), "小鲸的房间", 17, WHITE, True)
+    _text(d, (W - 14, 11), now, 14, CREAM, False, "ra")
+
+    if pixel:
+        # 块状活动牌
+        label = f"在{activity}"
+        tw = 12 + len(label) * 17
+        d.rectangle([12, H - 58, 12 + tw, H - 14], fill=(14, 22, 40), outline=ACCENT, width=3)
+        d.rectangle([24, H - 40, 32, H - 32], fill=ACCENT)
+        _text(d, (40, H - 48), label, 14, WHITE)
+        # 像素头像，方形硬边
+        size = 96
+        px, py = W - size - 16, H - size - 18
+        av = _pixel_avatar(portrait_path, size) if portrait_path else None
+        if av is not None:
+            d.rectangle([px - 5, py - 5, px + size + 4, py + size + 4], fill=OUTLINE)
+            img.paste(av, (px, py))
+            d.rectangle([px - 5, py - 5, px + size + 4, py + size + 4],
+                        outline=ACCENT, width=3)
+        else:
+            d.rectangle([px, py, px + size, py + size],
+                        fill=SKIN, outline=OUTLINE, width=3)
+        _text(d, (px + size // 2, py - 16), "SELFIE", 10, CREAM, True, "ma")
+        return
+
+    # 非像素模式保留原来的圆形头像
     size = 104
     px, py = W - size - 18, H - size - 30
     d.ellipse([px - 6, py - 6, px + size + 6, py + size + 6], fill=CREAM, outline=OUTLINE, width=2)
@@ -416,8 +524,61 @@ def draw_lighting(img, night=True):
     return Image.alpha_composite(img, overlay)
 
 
+def draw_sleep_selfie(d):
+    """睡觉自拍近景：枕头、侧脸、毯子，不再裁整张床。"""
+    d.rectangle([0, 0, W, H], fill=WALL)
+    for x in range(0, W, 54):
+        d.rectangle([x, 0, x + 26, H], fill=WALL_ALT)
+    # 床头板
+    d.rectangle([0, 108, W, 158], fill=WOOD_DARK, outline=OUTLINE)
+    d.rectangle([0, 116, W, 126], fill=WOOD_MID)
+    # 枕头
+    d.rounded_rectangle([100, 150, 440, 360], radius=44, fill=PILLOW, outline=OUTLINE, width=5)
+    d.rounded_rectangle([118, 166, 422, 344], radius=36, outline=CREAM_DARK, width=3)
+    # 头发外轮廓
+    cx, cy = 270, 250
+    d.ellipse([cx - 92, cy - 92, cx + 92, cy + 92], fill=HAIR, outline=OUTLINE)
+    # 脸
+    d.ellipse([cx - 72, cy - 70, cx + 72, cy + 74], fill=SKIN, outline=OUTLINE)
+    # 刘海
+    d.ellipse([cx - 80, cy - 92, cx + 80, cy + 18], fill=HAIR, outline=OUTLINE)
+    d.ellipse([cx - 60, cy - 80, cx + 48, cy - 8], fill=HAIR_LIGHT)
+    # 两侧长发
+    d.polygon([(cx - 80, cy - 20), (cx - 64, cy - 20), (cx - 66, cy + 82),
+               (cx - 90, cy + 60)], fill=HAIR, outline=OUTLINE)
+    d.polygon([(cx + 80, cy - 20), (cx + 64, cy - 20), (cx + 66, cy + 82),
+               (cx + 90, cy + 60)], fill=HAIR, outline=OUTLINE)
+    # 鲸鱼耳
+    d.polygon([(cx - 80, cy - 56), (cx - 112, cy - 64), (cx - 96, cy - 28)],
+              fill=HAIR_DARK, outline=OUTLINE)
+    d.polygon([(cx + 80, cy - 56), (cx + 112, cy - 64), (cx + 96, cy - 28)],
+              fill=HAIR_DARK, outline=OUTLINE)
+    # 呆毛
+    d.line([cx + 2, cy - 96, cx + 10, cy - 118, cx + 22, cy - 100],
+           fill=HAIR_LIGHT, width=5)
+    # 闭眼
+    d.arc([cx - 48, cy - 12, cx - 16, cy + 12], 200, 340, fill=OUTLINE, width=4)
+    d.arc([cx + 16, cy - 12, cx + 48, cy + 12], 200, 340, fill=OUTLINE, width=4)
+    # 腮红 + 嘴
+    d.rectangle([cx - 60, cy + 20, cx - 44, cy + 27], fill=(240, 150, 150))
+    d.rectangle([cx + 44, cy + 20, cx + 60, cy + 27], fill=(240, 150, 150))
+    d.arc([cx - 9, cy + 16, cx + 9, cy + 32], 0, 180, fill=OUTLINE, width=3)
+    # 毯子
+    d.rounded_rectangle([40, 330, 500, 720], radius=34, fill=BLANKET,
+                        outline=OUTLINE, width=5)
+    d.rectangle([110, 318, 430, 352], fill=BLANKET_ALT, outline=OUTLINE, width=3)
+    for i in range(3):
+        d.rectangle([64, 374 + i * 40, 476, 388 + i * 40], fill=BLANKET_ALT)
+    # 鲸鱼抱枕
+    d.ellipse([104, 286, 176, 334], fill=HAIR_LIGHT, outline=OUTLINE)
+    d.polygon([(168, 292), (198, 304), (168, 318)], fill=HAIR_LIGHT, outline=OUTLINE)
+    d.rectangle([120, 304, 126, 310], fill=OUTLINE)
+    d.rectangle([136, 304, 142, 310], fill=OUTLINE)
+
+
 def render_home_scene(activity="打游戏", mood="开心", energy=70,
-                      portrait_path=None, output_path=None, now=None):
+                      portrait_path=None, output_path=None, now=None,
+                      style="pixel"):
     if now is None:
         now = datetime.now().strftime("%H:%M")
     try:
@@ -425,37 +586,52 @@ def render_home_scene(activity="打游戏", mood="开心", energy=70,
     except Exception:
         hour = 12
     night = hour < 6 or hour >= 18
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
-    d = ImageDraw.Draw(img)
-    draw_room(d)
-    draw_window(d, night)
-    draw_shelf(d)
-    draw_posters(d)
-    draw_bed(d)
-    draw_rug(d)
-    draw_desk(d)
-    draw_plant(d)
-
     act = activity or "发呆"
-    if act in ("睡觉", "趴床"):
-        draw_sleeping(d)
-    elif act in ("写日记", "整理书桌"):
-        draw_chair(d, 270, 404)
-        draw_chibi(d, 270, 370, "sit", "notebook" if act == "写日记" else "", mood)
-    elif act == "喝可乐":
-        draw_chibi(d, 128, 408, "sit", "cola", mood)
-    elif act == "看书":
-        draw_chibi(d, 270, 536, "sit", "book", mood)
-    elif act == "撸猫":
-        draw_chibi(d, 236, 538, "sit", "", mood)
-        draw_cat(d, 278, 608)
+    pixel = str(style or "pixel").lower() == "pixel"
+
+    if pixel and act in ("睡觉", "趴床"):
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+        d = ImageDraw.Draw(img)
+        draw_sleep_selfie(d)
     else:
-        draw_chibi(d, 270, 538, "sit", "controller", mood)
-        draw_cat(d, 336, 604)
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+        d = ImageDraw.Draw(img)
+        draw_room(d)
+        draw_window(d, night)
+        draw_shelf(d)
+        draw_posters(d)
+        draw_bed(d)
+        draw_rug(d)
+        draw_desk(d)
+        draw_plant(d)
+
+        if act in ("睡觉", "趴床"):
+            draw_sleeping(d)
+        elif act in ("写日记", "整理书桌"):
+            draw_chair(d, 270, 404)
+            prop = "notebook" if act == "写日记" else "papers"
+            draw_chibi(d, 270, 370, "sit", prop, mood)
+        elif act == "喝可乐":
+            draw_chibi(d, 128, 408, "sit", "cola", mood)
+        elif act == "看书":
+            draw_chibi(d, 270, 536, "sit", "book", mood)
+        elif act == "撸猫":
+            draw_chibi(d, 236, 538, "sit", "", mood)
+            draw_cat(d, 278, 608)
+        else:
+            draw_chibi(d, 270, 538, "sit", "controller", mood)
+            draw_cat(d, 336, 604)
 
     img = draw_lighting(img, night)
+    if pixel:
+        img = _pixelate(img, _selfie_box(act))
     d = ImageDraw.Draw(img)
-    draw_hud(img, d, act, mood, now, portrait_path)
+    if pixel and act in ("睡觉", "趴床"):
+        for zx, zy, zs in ((390, 108, 26), (424, 78, 17), (452, 56, 12)):
+            _pixel_z(d, zx, zy, zs, WHITE)
+    draw_hud(img, d, act, mood, now, portrait_path, pixel=pixel)
+    if pixel:
+        d.rectangle([0, 0, W - 1, H - 1], outline=OUTLINE, width=4)
 
     out = Path(output_path) if output_path else Path("home_scene.png")
     out.parent.mkdir(parents=True, exist_ok=True)

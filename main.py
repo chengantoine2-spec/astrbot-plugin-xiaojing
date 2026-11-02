@@ -310,7 +310,7 @@ class Main(star.Star):
         self._boot_ts = time.time()
         self._report_song_cache: dict[str, dict] = {}
         self._last_song: dict[str, str] = {}
-        self._recent_images: dict[str, list[tuple[str, float]]] = {}
+        self._recent_images: dict[str, list[tuple[str, float, str]]] = {}
         self._recent_cards: dict[str, list[tuple[str, float, str]]] = {}
         self._recent_video_cards: dict[str, list[tuple[dict, float, str]]] = {}
         self._recent_videos: dict[str, list[tuple[str, float, str]]] = {}
@@ -1329,6 +1329,15 @@ class Main(star.Star):
                 arr = [x for x in arr if x[0] != ref]
                 arr.append((ref, now, name))
                 self._recent_images[key] = arr[-3:]
+            # 键数量兜底：长期运行时不保留已经过期的会话/用户键
+            if len(self._recent_images) > 256:
+                cutoff = now - 900
+                for k in list(self._recent_images):
+                    arr = [x for x in self._recent_images[k] if x[1] >= cutoff]
+                    if arr:
+                        self._recent_images[k] = arr
+                    else:
+                        self._recent_images.pop(k, None)
             logger.info(f"[小鲸] 记住图片：{ref[:80]}")
             await self._remember_sticker(event, comp, ref)
         except Exception as e:
@@ -4581,7 +4590,9 @@ class Main(star.Star):
         last_raw = str(last.get("path") or "")
         last_path = Path(last_raw) if last_raw else None
         try:
-            if (not force and last.get("activity") == activity and last_path and last_path.exists()
+            if (not force and last.get("activity") == activity
+                    and str(last.get("style") or "") == "pixel"
+                    and last_path and last_path.exists()
                     and time.time() - float(last.get("ts") or 0) < cooldown):
                 return last_path, activity, caption
         except Exception:
@@ -4591,11 +4602,23 @@ class Main(star.Star):
         out = HOME_SELFIE_DIR / f"selfie_{int(time.time() * 1000)}.png"
         await asyncio.to_thread(
             render_home_scene, activity, mood, energy,
-            str(portrait) if portrait.exists() else None, str(out), stamp,
+            str(portrait) if portrait.exists() else None, str(out), stamp, "pixel",
         )
-        st["last_selfie"] = {"ts": time.time(), "path": str(out), "activity": activity}
+        st["last_selfie"] = {"ts": time.time(), "path": str(out),
+                             "activity": activity, "style": "pixel"}
         self._save_home(st)
+        self._prune_selfies()
         return out, activity, caption
+
+    @staticmethod
+    def _prune_selfies(keep: int = 40) -> None:
+        try:
+            files = sorted(HOME_SELFIE_DIR.glob("selfie_*.png"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in files[max(8, int(keep)):]:
+                old.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     async def _send_selfie(self, event, force: bool = False) -> str:
         fp, activity, caption = await self._render_selfie(force=force)
@@ -6026,8 +6049,10 @@ class Main(star.Star):
             try:
                 ok = bool(await self.context.send_message(umo, chain))
             except Exception as e:
-                logger.error(f"[小鲸] 日报发送失败：{e}")
+                logger.error(f"[小鲸] 日报发送失败：{type(e).__name__}: {e!r}")
                 ok = False
+            if not ok:
+                logger.warning(f"[小鲸] 日报未发出 umo={umo} period={period}")
         if ok:
             if scheduled:
                 music_ok = await self._send_report_music(umo, fp)
