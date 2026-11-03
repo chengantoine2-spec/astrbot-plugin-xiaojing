@@ -162,7 +162,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.13"
+BUILD = "1.3.14"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -732,15 +732,6 @@ class Main(star.Star):
             "plugin": BUILD,
         }
 
-    def _model_line(self, umo: str | None = None) -> str:
-        info = self._model_info(umo)
-        parts = [f"聊天模型：{info['chat']}"]
-        if info["provider"] and info["provider"] != "未知":
-            parts.append(f"provider：{info['provider']}")
-        parts.append(f"判断/识图：{info['judge']}")
-        parts.append(f"插件版本：{info['plugin']}")
-        return "[你的模型信息] " + "；".join(parts) + "。被问到时如实回答，不要猜。"
-
     def _model_report(self, umo: str | None = None) -> str:
         info = self._model_info(umo)
         return (
@@ -811,7 +802,7 @@ class Main(star.Star):
         except Exception:
             pass
         self_note = self._self_note()
-        ctx = [self._env_line(), self._model_line(umo)]
+        ctx = [self._env_line()]
         for line in (self._prefs_line(), self._site_line(), self._mood_line(), self._birthday_line(),
                      self._home_line(),
                      ("\n[你对自己的认识] " + self_note) if self_note else "",

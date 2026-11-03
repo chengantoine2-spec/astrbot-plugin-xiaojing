@@ -84,7 +84,7 @@ git clone https://github.com/chengantoine2-spec/astrbot-plugin-xiaojing.git `
 
 目录名必须是 `astrbot_plugin_xiaojing`，AstrBot 才能正确识别插件。
 
-也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.13.zip`，解压成这个目录；或者直接复制本目录。
+也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.14.zip`，解压成这个目录；或者直接复制本目录。
 
 如果使用安装脚本：
 
@@ -221,6 +221,7 @@ AstrBot 侧选择 `aiocqhttp` 适配器并连接同一地址。
 
 ```text
 小鲸 模型版本          查看当前聊天/识图模型和插件版本
+模型信息按需读取，不注入每轮系统提示。
 小鲸 状态              查看当前热度、安静时间、预算
 小鲸 对账              对比插件记录与 AstrBot 统计
 小鲸 用量              查看 token 与费用
