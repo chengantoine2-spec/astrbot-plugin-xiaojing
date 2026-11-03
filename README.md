@@ -141,8 +141,6 @@ AstrBot 侧选择 `aiocqhttp` 适配器并连接同一地址。
 | `report_groups` | 日报群号列表 |
 | `report_keep_days` | 日报图片保留天数，默认 7 |
 | `report_keep_max` | 日报图片最多保留数，默认 20 |
-| `report_manual_reuse` | 手动要日报时优先复用当天该时段已生成的图，默认 `true` |
-| `report_manual_music` | 手动复用日报时，如果自动日报已经选过配乐，也发同一首，默认 `true` |
 | `video_cache_max` | 视频缓存最多保留条数，默认 40 |
 | `onebot.base` | NapCat HTTP 地址，如 `http://127.0.0.1:3000` |
 | `onebot.token` | NapCat access token |
@@ -321,7 +319,8 @@ schtasks /Create /F /SC MINUTE /MO 5 /TN "NapCat Watchdog" `
 ### 存储清理
 
 - `data/reports/`：启动时按“每天每时段只留最新一张”去重，再保留最近 7 天、最多 20 张；可用 `report_keep_days` / `report_keep_max` 调整。
-- 手动要日报时默认复用当天该时段最新的一张（`report_manual_reuse=true`），并复用自动日报已选的配乐（`report_manual_music=true`），避免内容不一致；设为 `false` 则重新生成/不配乐。
+- 手动要日报时始终重新生成一张、不附带配乐；自动日报才会补“今日配乐”。
+- 自动日报如果 T2I 渲染失败，会走本地兜底版；兜底版同样带鲸鱼背景、五个新闻板块和日记，不再是无背景的三块简版。
 - `data/video/`：启动时清理超过 7 天或超过 40 条的缓存（含媒体目录和关键帧）；可用 `video_cache_days` / `video_cache_max` 调整。
 
 ## 自定义

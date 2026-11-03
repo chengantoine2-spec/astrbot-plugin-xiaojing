@@ -81,6 +81,7 @@ def pick_tip(default: str = "") -> str:
     return tip
 
 _whale_cache: str | None = None
+LAST_RENDER_FALLBACK = False
 
 
 def whale_data_uri() -> str:
@@ -548,28 +549,117 @@ async def _render(tmpl: str, out: Path) -> bool:
         return False
 
 
+def _wrap_text(draw, text: str, font, max_width: int) -> list[str]:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not text:
+        return [""]
+    lines, current = [], ""
+    for ch in text:
+        candidate = current + ch
+        if not current or draw.textlength(candidate, font=font) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = ch
+    if current:
+        lines.append(current)
+    return lines
+
+
 def _pil_fallback(data: dict, out: Path) -> None:
-    W, H = 1080, 2100
+    W, H = 1080, 3200
     img = Image.new("RGB", (W, H), (253, 246, 232))
+    try:
+        bg = Image.open(WHALE_BG).convert("RGBA")
+        scale = H / max(1, bg.height)
+        bg = bg.resize((max(1, int(bg.width * scale)), H))
+        alpha = bg.getchannel("A").point(lambda a: int(a * 0.24))
+        bg.putalpha(alpha)
+        x = W - bg.width + 40
+        if x < 0:
+            bg = bg.crop((-x, 0, bg.width, H))
+            x = 0
+        base = img.convert("RGBA")
+        base.alpha_composite(bg, (x, 0))
+        img = base.convert("RGB")
+    except Exception:
+        pass
     d = ImageDraw.Draw(img)
     fb = ImageFont.truetype(FONT_BOLD, 56)
     fh = ImageFont.truetype(FONT_BOLD, 34)
-    f = ImageFont.truetype(FONT_PATH, 28)
-    d.text((56, 70), "小鲸日报", font=fb, fill=(138, 74, 18))
-    d.text((56, 140), f"{datetime.now(TZ).strftime('%Y-%m-%d')} · {data['period']}", font=f, fill=(165, 122, 77))
-    y = 210
-    for title, key in (("国内民生", "civic"), ("世界大新闻", "world"), ("IT 新闻", "it")):
-        d.text((56, y), title, font=fh, fill=(138, 74, 18)); y += 56
-        for item in data[key][:5]:
-            for i in range(0, min(len(item), 100), 30):
-                d.text((70, y), item[i:i + 30], font=f, fill=(84, 53, 28)); y += 38
-            y += 6
-        y += 24
+    f = ImageFont.truetype(FONT_PATH, 26)
+    small = ImageFont.truetype(FONT_PATH, 22)
+    d.text((56, 60), "小鲸日报", font=fb, fill=(138, 74, 18))
+    d.text((58, 132), f"{datetime.now(TZ).strftime('%Y-%m-%d')} · {data.get('period', '早报')}",
+           font=small, fill=(165, 122, 77))
+    y = 190
+    tip = str(data.get("tip") or "").strip()
+    if tip:
+        lines = _wrap_text(d, tip, f, W - 160)
+        box_h = 24 + len(lines) * 34
+        d.rounded_rectangle((50, y, W - 50, y + box_h), radius=16,
+                            fill=(247, 227, 192), outline=(201, 133, 60))
+        yy = y + 12
+        for line in lines:
+            d.text((70, yy), line, font=f, fill=(122, 74, 29))
+            yy += 34
+        y += box_h + 18
+    sections = (
+        ("国内民生", "civic"), ("世界大新闻", "world"), ("IT 新闻", "it"),
+        ("微博热点", "weibo"), ("B站热点", "bili"),
+    )
+    for title, key in sections:
+        items = [str(x) for x in (data.get(key) or [])][:5]
+        lines = []
+        if items:
+            for i, item in enumerate(items, 1):
+                lines.extend(_wrap_text(d, f"{i:02d}  {item}", f, W - 190))
+        else:
+            lines = ["暂无数据"]
+        box_h = 66 + len(lines) * 36 + 18
+        d.rounded_rectangle((50, y, W - 50, y + box_h), radius=20,
+                            fill=(255, 250, 240), outline=(232, 201, 155))
+        d.text((78, y + 16), title, font=fh, fill=(138, 74, 18))
+        yy = y + 62
+        for line in lines:
+            d.text((86, yy), line, font=f, fill=(84, 53, 28))
+            yy += 36
+        y += box_h + 16
+    diary = str(data.get("diary") or "").strip()
+    if diary:
+        lines = _wrap_text(d, diary, f, W - 190)
+        box_h = 66 + len(lines) * 36 + 24
+        d.rounded_rectangle((50, y, W - 50, y + box_h), radius=20,
+                            fill=(255, 250, 240), outline=(232, 201, 155))
+        d.text((78, y + 16), "小鲸的日记", font=fh, fill=(138, 74, 18))
+        yy = y + 62
+        for line in lines:
+            d.text((86, yy), line, font=f, fill=(107, 68, 35))
+            yy += 36
+        y += box_h + 16
+    updates = data.get("updates") or []
+    if updates:
+        lines = [f"{k}：{v}" for k, v in updates[:4]]
+        box_h = 66 + len(lines) * 36 + 20
+        d.rounded_rectangle((50, y, W - 50, y + box_h), radius=20,
+                            fill=(255, 250, 240), outline=(232, 201, 155))
+        d.text((78, y + 16), "我自己的动态", font=fh, fill=(138, 74, 18))
+        yy = y + 62
+        for line in lines:
+            d.text((86, yy), line, font=f, fill=(84, 53, 28))
+            yy += 36
+        y += box_h + 16
+    d.text((W // 2, min(H - 40, y + 10)),
+           "由小鲸整理 · 60s / 参考消息 / IT之家 / 微博 / B站 / 网易云",
+           font=small, fill=(168, 120, 74), anchor="ma")
+    img = img.crop((0, 0, W, min(H, max(1200, y + 60))))
     img.save(out, "PNG")
 
 
 async def build_daily_png(out_dir: Path, period: str = "早报",
                           keep_days: int = 7, keep_max: int = 20) -> Path:
+    global LAST_RENDER_FALLBACK
+    LAST_RENDER_FALLBACK = False
     prune_reports(out_dir, keep_days=keep_days, keep_max=keep_max)
     sixty, world, it, weibo, bili, hol, quote = await asyncio.gather(
         fetch_sixty(),
@@ -618,10 +708,11 @@ async def build_daily_png(out_dir: Path, period: str = "早报",
     now = datetime.now(TZ)
     fp = out_dir / f"daily_{now.strftime('%Y%m%d_%H%M')}_{'am' if period == '早报' else 'pm'}.png"
     tmpl = render_html(data)
-    for attempt in range(3):
+    for attempt in range(4):
         if await _render(tmpl, fp):
             return fp
-        await asyncio.sleep(2)
+        await asyncio.sleep(2 * (attempt + 1))
+    LAST_RENDER_FALLBACK = True
     _pil_fallback(data, fp)
     return fp
 
