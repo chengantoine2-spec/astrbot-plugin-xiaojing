@@ -162,7 +162,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.12"
+BUILD = "1.3.13"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -706,6 +706,48 @@ class Main(star.Star):
         except Exception:
             return max(1, int(default))
 
+    def _model_info(self, umo: str | None = None) -> dict:
+        """只读当前模型信息；不读取、不输出任何 Key。"""
+        chat = ""
+        provider_id = ""
+        try:
+            provider = self.context.get_using_provider(umo)
+            if provider:
+                chat = str(provider.get_model() or "").strip()
+                cfg = getattr(provider, "provider_config", None) or {}
+                provider_id = str(cfg.get("id") or cfg.get("name") or "").strip()
+                if not chat:
+                    chat = str(cfg.get("model") or "").strip()
+        except Exception:
+            pass
+        if not chat:
+            chat = str(self.cfg.get("chat_model") or "未知").strip()
+        judge = str(self.cfg.get("judge_model") or "").strip()
+        vision = str(self.cfg.get("vision_model") or judge or "未配置").strip()
+        return {
+            "chat": chat or "未知",
+            "provider": provider_id or "未知",
+            "judge": judge or vision,
+            "vision": vision,
+            "plugin": BUILD,
+        }
+
+    def _model_line(self, umo: str | None = None) -> str:
+        info = self._model_info(umo)
+        parts = [f"聊天模型：{info['chat']}"]
+        if info["provider"] and info["provider"] != "未知":
+            parts.append(f"provider：{info['provider']}")
+        parts.append(f"判断/识图：{info['judge']}")
+        parts.append(f"插件版本：{info['plugin']}")
+        return "[你的模型信息] " + "；".join(parts) + "。被问到时如实回答，不要猜。"
+
+    def _model_report(self, umo: str | None = None) -> str:
+        info = self._model_info(umo)
+        return (
+            f"我现在跑的是 {info['chat']}（provider：{info['provider']}）；"
+            f"判断/识图用 {info['judge']}；小鲸插件版本 {info['plugin']}。"
+        )
+
     def _build_system_prompt(self, umo: str | None, query: str = "") -> str:
         """统一拼装：人格 → 规则 → 环境 → 记忆。新增能力只改「能力标记」一处。"""
         rules = (
@@ -769,7 +811,7 @@ class Main(star.Star):
         except Exception:
             pass
         self_note = self._self_note()
-        ctx = [self._env_line()]
+        ctx = [self._env_line(), self._model_line(umo)]
         for line in (self._prefs_line(), self._site_line(), self._mood_line(), self._birthday_line(),
                      self._home_line(),
                      ("\n[你对自己的认识] " + self_note) if self_note else "",
@@ -1212,6 +1254,13 @@ class Main(star.Star):
         if core.startswith(("学习", "研究", "看世界")):
             if await self._world_learn_command(event, core):
                 return True
+        if core in ("模型版本", "你的模型", "你是什么模型", "模型信息") or re.search(
+            r"(你|小鲸).{0,12}(是|用|跑|运行|背后).{0,8}(什么|哪个|啥).{0,6}模型"
+            r"|你.{0,8}模型.{0,6}(版本|是什么|哪个|什么)",
+            core,
+        ):
+            await self._reply(event, self._model_report(event.unified_msg_origin))
+            return True
         if core in ("世界笔记", "学习笔记"):
             await self._reply(event, world_learning.format_notes(10)[:1800])
             return True
