@@ -162,7 +162,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.14"
+BUILD = "1.3.15"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -1174,7 +1174,7 @@ class Main(star.Star):
             f"Record {'可用' if Record is not None else '不可用'}",
             "任务：" + " ".join(tasks),
         ]
-        await self._reply(event, "\n".join(lines))
+        self._reply(event, "\n".join(lines))
 
     # ---------------- 配置命令 ----------------
     async def _handle_command(self, event: AstrMessageEvent, text: str) -> bool:
@@ -1250,10 +1250,10 @@ class Main(star.Star):
             r"|你.{0,8}模型.{0,6}(版本|是什么|哪个|什么)",
             core,
         ):
-            await self._reply(event, self._model_report(event.unified_msg_origin))
+            self._reply(event, self._model_report(event.unified_msg_origin))
             return True
         if core in ("世界笔记", "学习笔记"):
-            await self._reply(event, world_learning.format_notes(10)[:1800])
+            self._reply(event, world_learning.format_notes(10)[:1800])
             return True
         m = re.match(r"^(?:世界笔记|学习笔记)[\s：:，,]+(.+)$", core)
         if m:
@@ -1262,24 +1262,24 @@ class Main(star.Star):
         if core.startswith("忘记笔记"):
             key = re.sub(r"^忘记笔记", "", core).strip(" ：:，,。")
             n = world_learning.remove_notes(key) if key else 0
-            await self._reply(event, f"忘了 {n} 个主题的学习笔记。")
+            self._reply(event, f"忘了 {n} 个主题的学习笔记。")
             return True
         if core in ("世界记忆", "学到什么", "世界知识"):
-            await self._reply(event, world_learning.format_facts(10)[:1500])
+            self._reply(event, world_learning.format_facts(10)[:1500])
             return True
         if core.startswith("忘记世界"):
             key = re.sub(r"^忘记世界", "", core).strip(" ：:，,。")
             n = world_learning.remove_facts(key) if key else 0
-            await self._reply(event, f"忘了 {n} 条世界记忆。")
+            self._reply(event, f"忘了 {n} 条世界记忆。")
             return True
         if core == "世界主题":
             topics = [str(x) for x in (self.cfg.get("world_topics") or []) if str(x).strip()]
-            await self._reply(event, "世界学习主题：" + ("、".join(topics) if topics else "未设置，按兴趣随机选。"))
+            self._reply(event, "世界学习主题：" + ("、".join(topics) if topics else "未设置，按兴趣随机选。"))
             return True
         if core.startswith(("查人", "谁叫")):
             q = re.sub(r"^(查人|谁叫)", "", core).strip(" ：:，,。")
             if not q:
-                await self._reply(event, "查谁？给我 QQ 号或名字。")
+                self._reply(event, "查谁？给我 QQ 号或名字。")
                 return True
             people = self._people_state().get("people", {})
             matches = []
@@ -1292,7 +1292,7 @@ class Main(star.Star):
                 if (q.isdigit() and q == str(qq)) or (not q.isdigit() and any(q in n for n in names if n)):
                     matches.append((qq, p))
             if not matches:
-                await self._reply(event, f"没找到和「{q}」对得上的人。")
+                self._reply(event, f"没找到和「{q}」对得上的人。")
                 return True
             lines = []
             for qq, p in matches[:6]:
@@ -1301,7 +1301,7 @@ class Main(star.Star):
                 if last:
                     line += "｜最近 " + time.strftime("%m-%d %H:%M", time.localtime(last))
                 lines.append(line)
-            await self._reply(event, "\n".join(lines))
+            self._reply(event, "\n".join(lines))
             return True
         if core in ("他是谁", "这是谁", "查一下他"):
             uids = []
@@ -1315,46 +1315,46 @@ class Main(star.Star):
                     if qq and qq not in (self_id, "all"):
                         uids.append(qq)
             if not uids:
-                await self._reply(event, "你@一个人，我再帮你查。")
+                self._reply(event, "你@一个人，我再帮你查。")
                 return True
-            await self._reply(event, "\n".join(self._identity_line(qq) for qq in uids[:4]))
+            self._reply(event, "\n".join(self._identity_line(qq) for qq in uids[:4]))
             return True
         if core in ("自我修改", "待审批", "自我调整"):
-            await self._reply(event, self_editor.format_pending())
+            self._reply(event, self_editor.format_pending())
             return True
         if core.startswith(("批准", "通过")):
             pid = re.sub(r"^(批准|通过)", "", core).strip(" ：:，,。#")
             ok, msg = self_editor.apply(pid)
-            await self._reply(event, msg + (" 已写回提示词。" if ok else ""))
+            self._reply(event, msg + (" 已写回提示词。" if ok else ""))
             return True
         if core.startswith("拒绝"):
             pid = re.sub(r"^拒绝", "", core).strip(" ：:，,。#")
             ok, msg = self_editor.reject(pid)
-            await self._reply(event, msg)
+            self._reply(event, msg)
             return True
         if core.startswith("回滚"):
             pid = re.sub(r"^回滚", "", core).strip(" ：:，,。#")
             ok, msg = self_editor.rollback(pid)
-            await self._reply(event, msg)
+            self._reply(event, msg)
             return True
         if core in ("看看自我卡", "自我卡"):
             try:
                 txt = SELF_PATH.read_text(encoding="utf-8").strip()
             except Exception:
                 txt = ""
-            await self._reply(event, (txt or "自我卡还没有内容。")[:1500])
+            self._reply(event, (txt or "自我卡还没有内容。")[:1500])
             return True
         if core.startswith("提个自我修改"):
             txt = re.sub(r"^提个自我修改", "", core).strip(" ：:，,。")
             patch = self_editor.propose("style", txt, "主人提议", 1.0)
             if patch:
-                await self._reply(event, f"提案 {patch['id']} 已创建，用「批准 {patch['id']}」生效。")
+                self._reply(event, f"提案 {patch['id']} 已创建，用「批准 {patch['id']}」生效。")
             else:
-                await self._reply(event, "这条没能通过安全校验，换一种说法？")
+                self._reply(event, "这条没能通过安全校验，换一种说法？")
             return True
         if core == "称呼":
             pref = self._preferred_name(uid)
-            await self._reply(
+            self._reply(
                 event,
                 f"现在叫你「{pref}」。" if pref
                 else "我还不确定怎么叫你，直接叫「你」。想让我记住，就说「叫我XX」。",
@@ -1368,7 +1368,7 @@ class Main(star.Star):
             else:
                 target, label = uid, rest
             if not label:
-                await self._reply(event, "要我叫什么？说「称呼 名字」。")
+                self._reply(event, "要我叫什么？说「称呼 名字」。")
                 return True
             state = self._people_state()
             p = state.setdefault("people", {}).setdefault(
@@ -1380,7 +1380,7 @@ class Main(star.Star):
             p["aliases"] = aliases[-8:]
             self._people_save()
             self._titles[target] = (label, time.time())
-            await self._reply(event, f"好，以后叫他「{label}」。")
+            self._reply(event, f"好，以后叫他「{label}」。")
             return True
         if core in ("音色", "声音", "tts", "TTS"):
             provider = str(self.cfg.get("tts_provider") or "sapi")
@@ -1388,7 +1388,7 @@ class Main(star.Star):
                 voice = str(self.cfg.get("tts_sapi_voice") or "Microsoft Huihui Desktop")
             else:
                 voice = str(self.cfg.get("tts_api_voice") or "Vivian")
-            await self._reply(
+            self._reply(
                 event,
                 f"当前音色：{provider} / {voice}。\n"
                 "角色声线：清亮偏软的少女音，句尾轻微上扬；认真时吐字干脆，不御姐、不播音腔。",
@@ -1400,7 +1400,7 @@ class Main(star.Star):
                 content = "在的，我在。"
             ok = await self._send_voice(event, content)
             if not ok:
-                await self._reply(event, "这次没发出声音……我先用文字说：在的。")
+                self._reply(event, "这次没发出声音……我先用文字说：在的。")
             return True
         if core in ("记忆", "看看记忆", "记忆状态"):
             facts = self._facts_state().get("facts", [])
@@ -1416,7 +1416,7 @@ class Main(star.Star):
         if core.startswith(("忘记", "忘掉")):
             key = re.sub(r"^(忘记|忘掉)", "", core).strip(" ：:，,。")
             if not key:
-                await self._reply(event, "要忘记什么？给我一个关键词。")
+                self._reply(event, "要忘记什么？给我一个关键词。")
                 return True
             state = self._facts_state()
             arr = state.get("facts", [])
@@ -1429,12 +1429,12 @@ class Main(star.Star):
                 notes = p.get("notes") or []
                 p["notes"] = [x for x in notes if key not in str(x)]
             self._people_save()
-            await self._reply(event, f"忘了 {removed} 条和「{key}」有关的事。")
+            self._reply(event, f"忘了 {removed} 条和「{key}」有关的事。")
             return True
         if core.startswith("记住"):
             content = re.sub(r"^记住", "", core).strip(" ：:，,。")
             if not content:
-                await self._reply(event, "要记住什么？说具体一点。")
+                self._reply(event, "要记住什么？说具体一点。")
                 return True
             state = self._facts_state()
             arr = state.setdefault("facts", [])
@@ -1447,15 +1447,15 @@ class Main(star.Star):
             state["facts"] = arr[-300:]
             self._facts_save()
             self._people_touch(uid, event.get_sender_name() or "", note=content)
-            await self._reply(event, "记住了。")
+            self._reply(event, "记住了。")
             return True
         if core in ("视频笔记", "看过的视频"):
-            await self._reply(event, video_notes.format_notes(10)[:1800])
+            self._reply(event, video_notes.format_notes(10)[:1800])
             return True
         if core.startswith("忘记视频"):
             key = re.sub(r"^忘记视频", "", core).strip(" ：:，,。")
             n = video_notes.remove_notes(key) if key else 0
-            await self._reply(event, f"忘了 {n} 条视频笔记。")
+            self._reply(event, f"忘了 {n} 条视频笔记。")
             return True
         if re.match(r"^(?:小鲸鱼?|小鲸)?[\s，,]*?(?:看|解析|总结)?视频", t):
             src, local = await self._resolve_video_source(event, t)
@@ -4284,26 +4284,42 @@ class Main(star.Star):
                         item["asked"] = True
                         changed = True
                         continue
-                    line = await self._llm(
-                        f"你之前记下要跟进的事：{item.get('what')}。"
-                        "用一句自然的话问对方进展，不要提‘记录’‘待办’‘跟进’这些词。",
-                        item.get("umo"),
-                    )
-                    if line:
-                        line, _a, _b = self._extract_markers(line)
-                        await self.context.send_message(
-                            item["umo"], MessageChain(chain=[Plain(line)])
+                    try:
+                        line = await self._llm(
+                            f"你之前记下要跟进的事：{item.get('what')}。"
+                            "用一句自然的话问对方进展，不要提‘记录’‘待办’‘跟进’这些词。",
+                            item.get("umo"),
                         )
-                        item["asked"] = True
+                        if line:
+                            line, _a, _b = self._extract_markers(line)
+                            await self.context.send_message(
+                                item["umo"], MessageChain(chain=[Plain(line)])
+                            )
+                            item["asked"] = True
+                            item["fails"] = 0
+                            changed = True
+                            logger.info(f"[小鲸] 跟进：{item.get('what')[:30]}")
+                    except Exception as e:
+                        fails = int(item.get("fails", 0)) + 1
+                        wait = min(6 * 3600, 300 * (2 ** min(fails - 1, 5)))
+                        item["fails"] = fails
+                        item["due"] = now + wait
                         changed = True
-                        logger.info(f"[小鲸] 跟进：{item.get('what')[:30]}")
+                        logger.warning(
+                            f"[小鲸] 待跟进发送失败({fails})："
+                            f"{type(e).__name__}: {e!r}，{wait}s 后重试"
+                        )
+                        if fails == 1:
+                            logger.warning("[小鲸] 待跟进异常堆栈", exc_info=True)
                     break
                 if changed:
                     self._save_loops(items)
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.warning(f"[小鲸] 待跟进任务异常：{e}")
+                logger.warning(
+                    f"[小鲸] 待跟进任务异常：{type(e).__name__}: {e!r}"
+                )
 
     @staticmethod
     def _split_bubbles(text: str) -> list[str]:
@@ -8129,6 +8145,14 @@ class Main(star.Star):
                             )
                     if delay > 7200:
                         continue
+                    retry = getattr(self, "_report_retry", None)
+                    if retry is None:
+                        retry = {}
+                        self._report_retry = retry
+                    retry_key = f"{day}:{hm}"
+                    fails, next_at = retry.get(retry_key, (0, 0.0))
+                    if time.time() < float(next_at or 0):
+                        continue
                     period = "早报" if hm < "12:00" else "晚报"
                     targets = [f"napcat:GroupMessage:{g}" for g in (self.cfg.get("report_groups") or [])]
                     targets += [f"napcat:FriendMessage:{u}" for u in (self.cfg.get("owner_ids") or [])]
@@ -8161,9 +8185,22 @@ class Main(star.Star):
                         done.add(hm)
                         st[day] = sorted(done)
                         self._save_report_state(st)
+                        retry.pop(retry_key, None)
                         logger.info(f"[小鲸] {period}({hm}) 已发送 {sent}/{len(targets)}")
                     else:
-                        logger.warning(f"[小鲸] {period}({hm}) 发送 0/{len(targets)}，下轮重试")
+                        fails = int(fails) + 1
+                        wait = min(600, 30 * (2 ** min(fails - 1, 4)))
+                        retry[retry_key] = (fails, time.time() + wait)
+                        if fails <= 3:
+                            logger.warning(
+                                f"[小鲸] {period}({hm}) 发送 0/{len(targets)}，"
+                                f"第 {fails} 次失败，{wait}s 后重试"
+                            )
+                        else:
+                            logger.info(
+                                f"[小鲸] {period}({hm}) 仍发不出（第 {fails} 次），"
+                                f"{wait}s 后重试"
+                            )
             except asyncio.CancelledError:
                 return
             except Exception as e:

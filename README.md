@@ -84,7 +84,7 @@ git clone https://github.com/chengantoine2-spec/astrbot-plugin-xiaojing.git `
 
 目录名必须是 `astrbot_plugin_xiaojing`，AstrBot 才能正确识别插件。
 
-也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.14.zip`，解压成这个目录；或者直接复制本目录。
+也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.15.zip`，解压成这个目录；或者直接复制本目录。
 
 如果使用安装脚本：
 
