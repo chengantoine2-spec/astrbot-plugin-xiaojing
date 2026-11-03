@@ -74,17 +74,31 @@ data/assets/         可选背景图目录（角色立绘需自备）
 
 ### 1. 放入 AstrBot 插件目录
 
+先确认 AstrBot 的数据目录。便携版通常是 `<AstrBot>\data`，安装版通常是 `$env:USERPROFILE\.astrbot\data`，下面用 `$AstrBotData` 表示。
+
 ```powershell
-git clone https://github.com/<your-name>/astrbot-plugin-xiaojing.git `
-  "$env:USERPROFILE\.astrbot\data\plugins\astrbot_plugin_xiaojing"
+$AstrBotData = "D:\AstrBotData\data"   # 按你的实际 AstrBot 数据目录改
+git clone https://github.com/chengantoine2-spec/astrbot-plugin-xiaojing.git `
+  "$AstrBotData\plugins\astrbot_plugin_xiaojing"
 ```
 
 目录名必须是 `astrbot_plugin_xiaojing`，AstrBot 才能正确识别插件。
 
-也可以直接复制本目录，或运行：
+也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.11.zip`，解压成这个目录；或者直接复制本目录。
+
+如果使用安装脚本：
 
 ```powershell
-.\install.ps1 -PythonExe "<AstrBot>\backend\python\python.exe"
+.\install.ps1 -PythonExe "<AstrBot>\backend\python\python.exe" `
+  -AstrBotData "$AstrBotData"
+```
+
+如果提示“禁止运行脚本”，改用：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 `
+  -PythonExe "<AstrBot>\backend\python\python.exe" `
+  -AstrBotData "$AstrBotData"
 ```
 
 ### 2. 安装依赖
@@ -92,12 +106,18 @@ git clone https://github.com/<your-name>/astrbot-plugin-xiaojing.git `
 使用 AstrBot 自带的 Python：
 
 ```powershell
+cd "$AstrBotData\plugins\astrbot_plugin_xiaojing"
 & "<AstrBot>\backend\python\python.exe" -m pip install -r requirements.txt
 ```
 
-### 3. 生成配置
+### 3. 配置 AstrBot 聊天模型
+
+在 AstrBot 里至少配置一个可用的聊天 provider（LLM），否则插件无法回复。识图/视频画面分析还需要视觉模型；不填 `vision_api_key` 时，插件会复用当前聊天 provider 的 Key。
+
+### 4. 生成配置
 
 ```powershell
+cd "$AstrBotData\plugins\astrbot_plugin_xiaojing"
 Copy-Item config.example.json data\config.json
 ```
 
@@ -107,7 +127,7 @@ Copy-Item config.example.json data\config.json
 - `onebot.base` / `onebot.token`：NapCat 的 HTTP 地址与 token
 - `report_groups`：日报群号（不需要日报可留空）
 
-### 4. 配置 NapCat
+### 5. 配置 NapCat
 
 在 NapCat 中开启：
 
@@ -116,7 +136,18 @@ Copy-Item config.example.json data\config.json
 
 AstrBot 侧选择 `aiocqhttp` 适配器并连接同一地址。
 
-### 5. 重启 AstrBot
+### 6. 素材（可选，但影响自拍/定制图）
+
+仓库不包含角色立绘和社区图片。要让自拍、语录卡、表情包完整工作，需要：
+
+- 把角色立绘放到 `data/assets/whale_bg.webp`（日报背景）
+- 准备 `data/assets/library.json` 和 `data/assets/community/` 下的立绘/场景图
+- 参考 `ASSETS.md` 的素材来源和授权说明
+- 可参考 `image_templates.example.json` 自定义图片模板
+
+没有素材时，聊天、日报兜底、像素小家和文字能力仍可运行，但自拍/定制图会降级。
+
+### 7. 重启 AstrBot
 
 日志出现以下内容即表示加载成功：
 
@@ -125,6 +156,21 @@ AstrBot 侧选择 `aiocqhttp` 适配器并连接同一地址。
 [小鲸] 仪式调度已启动
 [Core] aiocqhttp(OneBot v11) 适配器已连接。
 ```
+
+### 复刻检查清单
+
+照着做之前，确认这几项：
+
+- **系统**：Windows 10/11（DPAPI、关机钩子、计划任务依赖 Windows）
+- **AstrBot 4.x** 已启动，并配置了可用的聊天 provider
+- **NapCat** 已登录 QQ，HTTP 与反向 WebSocket 都指向 AstrBot
+- `data/config.json` 里的 `owner_ids`、`onebot.base`、`onebot.token` 已改成自己的
+- 需要日报就填 `report_groups`，并把 `report_enabled` 保持 `true`
+- 需要自拍/定制图，准备 `data/assets/library.json`、`data/assets/community/` 和 `data/assets/whale_bg.webp`
+- 视频理解首次使用会下载 Whisper 模型（约 500MB），需要留磁盘和等待时间
+- 日报 HTML 渲染使用外部 T2I 服务；不可用时会自动走本地兜底版，不阻塞发送
+
+如果这几项都满足，按上面的步骤可以复刻出可聊天、日报、视频总结、图片表达和记忆功能；素材缺失只会让自拍/定制图降级。
 
 ## 配置说明
 

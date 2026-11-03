@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.11 - 2026-11-03
+
+- 复刻文档修正：真实 clone 地址、便携版 `-AstrBotData`、PowerShell 执行策略、聊天 provider 与素材清单
+- 安装脚本改为 UTF-8 BOM，修复 Windows PowerShell 5.1 解析中文报错
+- 安装脚本复制 `requirements.txt` 到插件目录，并从目标目录安装依赖
+- `requirements.txt` 补充 `beautifulsoup4`
+
 ## 1.3.10 - 2026-11-03
 
 - 视频总结强制每个要点独立一行，减少模型把多个要点挤成一段

@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$PythonExe = "",
   [string]$AstrBotData = "$env:USERPROFILE\.astrbot\data"
 )
@@ -22,6 +22,7 @@ New-Item -ItemType Directory -Path $target -Force | Out-Null
 Copy-Item "$here\*.py" $target -Force
 Copy-Item "$here\metadata.yaml" $target -Force
 Copy-Item "$here\config.example.json" $target -Force
+Copy-Item "$here\requirements.txt" $target -Force
 New-Item -ItemType Directory -Path "$target\data\assets" -Force | Out-Null
 Copy-Item "$here\data\assets\*" "$target\data\assets" -Force
 if (-not (Test-Path "$target\data\config.json")) {
@@ -29,5 +30,5 @@ if (-not (Test-Path "$target\data\config.json")) {
   Write-Host "已生成 data/config.json，请填写 owner_ids / report_groups / onebot.token"
 }
 
-& $PythonExe -m pip install -r "$here\requirements.txt" --disable-pip-version-check
+& $PythonExe -m pip install -r "$target\requirements.txt" --disable-pip-version-check
 Write-Host "依赖安装完成。重启 AstrBot，并在新机器上重新绑定网易云 Cookie。"
