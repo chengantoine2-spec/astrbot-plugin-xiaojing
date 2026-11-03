@@ -157,7 +157,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.6"
+BUILD = "1.3.7"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -3516,6 +3516,60 @@ class Main(star.Star):
             return text[:24]
         return q
 
+    @staticmethod
+    def _music_norm(text: str) -> str:
+        return re.sub(r"[\s,，、。！？!?~\-—_（）()【】\[\]《》\"'“”‘’]+", "",
+                      str(text or "").lower())
+
+    @staticmethod
+    def _music_version_penalty(title: str, query: str) -> float:
+        low = str(title or "").lower()
+        qn = Main._music_norm(query)
+        weights = {
+            "cover": 30, "翻唱": 30, "翻自": 25, "原唱": 15,
+            "remix": 25, "dj": 25, "instrumental": 25, "karaoke": 25,
+            "伴奏": 25, "纯音乐": 25, "钢琴": 18, "piano": 18,
+            "女声版": 20, "男声版": 20, "童声版": 20,
+            "加速版": 25, "降速版": 25, "慢速版": 20, "片段": 25,
+            "抖音": 25, "live": 12, "acoustic": 10,
+            "slowed": 20, "sped up": 20, "speed up": 20,
+        }
+        return float(sum(w for k, w in weights.items()
+                         if k in low and k not in qn))
+
+    @classmethod
+    def _music_score(cls, song: dict, query: str,
+                     avoid: set[str] | None = None, index: int = 0) -> float:
+        qn = cls._music_norm(query)
+        title = str(song.get("name") or "")
+        tn = cls._music_norm(title)
+        artists = [cls._music_norm(a.get("name") or "")
+                   for a in (song.get("artists") or [])]
+        qg = set(cls._bigrams(qn))
+        tg = set(cls._bigrams(tn))
+        inter = len(qg & tg)
+        precision = inter / max(1, len(tg))
+        recall = inter / max(1, len(qg))
+        f1 = 2 * precision * recall / max(1e-9, precision + recall)
+        artist_ratio = max([len(qg & set(cls._bigrams(a))) / max(1, len(qg))
+                            for a in artists] or [0.0])
+        score = 0.0
+        if qn and qn == tn:
+            score += 100
+        elif tn and tn in qn:
+            score += 35
+        elif tn and qn in tn:
+            score += 20
+        score += 30 * f1
+        if any(a and (a in qn or qn in a) for a in artists):
+            score += 12
+        score += 6 * artist_ratio
+        score -= cls._music_version_penalty(title, query)
+        if avoid and title in avoid:
+            score -= 60
+        score -= max(0, int(index)) * 0.01
+        return score
+
     async def _search_music(self, query: str, avoid: set[str] | None = None) -> dict | None:
         """网易云搜索（免登录）。"""
         headers = {"User-Agent": UA, "Referer": "https://music.163.com/"}
@@ -3532,21 +3586,21 @@ class Main(star.Star):
             songs = ((j or {}).get("result") or {}).get("songs") or []
             if not songs:
                 return None
-            grams = self._bigrams(self._clean_query(query))
-            def _score(song):
-                title = song.get("name") or ""
-                artists = " ".join(a.get("name", "") for a in (song.get("artists") or []))
-                th = sum(1 for g in grams if g in title)
-                ah = sum(1 for g in grams if g in artists)
-                skip = 12 if avoid and title in avoid else 0
-                return th + ah * 2 - skip
-
-            best = max(songs, key=_score)
-            if avoid and (best.get("name") or "") in avoid and len(songs) > 1:
-                alt = [x for x in songs if (x.get("name") or "") not in avoid]
+            ranked = sorted(
+                ((self._music_score(song, query, avoid, i), song)
+                 for i, song in enumerate(songs)),
+                key=lambda x: x[0], reverse=True,
+            )
+            best_score, best = ranked[0]
+            if avoid and (best.get("name") or "") in avoid:
+                alt = [x for x in ranked if (x[1].get("name") or "") not in avoid]
                 if alt:
-                    best = max(alt, key=_score)
-            logger.info(f"[小鲸] 点歌查询「{query}」→《{best.get('name')}》")
+                    best_score, best = alt[0]
+            top = "、".join(f"{s.get('name')}({sc:.0f})" for sc, s in ranked[:3])
+            logger.info(
+                f"[小鲸] 点歌查询「{query}」→《{best.get('name')}》 "
+                f"score={best_score:.1f} 候选={top}"
+            )
             artists = "、".join(a.get("name", "") for a in (best.get("artists") or [])[:2])
             cover = ""
             try:
