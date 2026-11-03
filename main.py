@@ -162,7 +162,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.9"
+BUILD = "1.3.10"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -4311,6 +4311,7 @@ class Main(star.Star):
             pass
         if (
             text and not img_url and not img_data and not sticker
+            and "\n" not in text
             and len(text) > 60 and random.random() < float(self.cfg.get("reply_split_chance", 0.35))
         ):
             max_bubbles = max(1, min(2, int(self.cfg.get("reply_max_bubbles", 2))))
@@ -6981,6 +6982,20 @@ class Main(star.Star):
         return clean_marker_residue(VIDEO_MARK_RE.sub("", text)), (m.group(1) or "")
 
     @staticmethod
+    def _format_video_summary(text: str) -> str:
+        """模型偶尔把多个要点挤成一段，这里补回换行。"""
+        t = str(text or "").replace("\r\n", "\n").strip()
+        if not t:
+            return t
+        # 编号要点：句号/分号后紧跟 1. 2. 或 1、2、时补换行
+        t = re.sub(r"(?<=[。；;])\s*(?=\d{1,2}[.、)](?!\d))", "\n", t)
+        t = re.sub(r"[ \t]+(?=\d{1,2}[.、)](?!\d))", "\n", t)
+        # 项目符号要点：同一行里的 " - " 拆开
+        t = re.sub(r"[ \t]+(?=-\s)", "\n", t)
+        t = re.sub(r"\n{3,}", "\n\n", t)
+        return t.strip()
+
+    @staticmethod
     def _video_lines(res: VideoResult, limit: int = 300) -> str:
         lines = []
         for seg in (res.segments or [])[:limit]:
@@ -7041,13 +7056,15 @@ class Main(star.Star):
             + f"对方说：{text or '看看这个视频'}\n"
             "请用你的身份写一份视频总结：\n"
             "1. 先用一句话说这是什么视频；\n"
-            "2. 3-6 个要点，尽量带 [MM:SS] 时间戳；\n"
+            "2. 3-6 个要点，每个要点单独一行，以「- 」开头，尽量带 [MM:SS] 时间戳；\n"
+            "不要把多个要点挤在同一段，也不要用空格、分号或逗号把它们连起来；\n"
             "3. 如果有画面信息，补一句“画面”；\n"
             "4. 最后一句你的感受或推荐；\n"
             "只依据上面的字幕和画面，不要编造；末尾原样附上“原链接”那一行（只有上面给了才附，没给就不要提链接）。"
         )
         summary = await self._llm(prompt, umo)
         summary, _a, _b = self._extract_markers(summary)
+        summary = self._format_video_summary(summary)
         summary = self._trim_reply(summary, 1800)
         if summary:
             return summary
