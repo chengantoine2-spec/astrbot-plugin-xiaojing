@@ -157,7 +157,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.7"
+BUILD = "1.3.8"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -272,6 +272,8 @@ DEFAULTS = {
     "world_daily_token_budget": 300000,
     "report_keep_days": 7,
     "report_keep_max": 20,
+    "report_manual_reuse": True,
+    "report_manual_music": True,
     "home_activity_minutes": 45,
     "video_enabled": True,
     "video_max_minutes": 30,
@@ -7825,8 +7827,23 @@ class Main(star.Star):
         except Exception:
             pass
 
+    def _latest_report_file(self, period: str) -> Path | None:
+        """当天该时段最新的一张日报图，供手动请求复用自动日报。"""
+        try:
+            day = time.strftime("%Y%m%d", time.gmtime(time.time() + 8 * 3600))
+            suffix = "am" if period == "早报" else "pm"
+            files = [p for p in (DATA_DIR / "reports").glob(f"daily_{day}_*_{suffix}.png")
+                     if p.is_file()]
+            return max(files, key=lambda p: p.stat().st_mtime) if files else None
+        except Exception:
+            return None
+
     async def _send_report(self, umo: str, period: str, event=None, fp: Path | None = None,
                            scheduled: bool = False) -> bool:
+        if fp is None and event is not None and self.cfg.get("report_manual_reuse", True):
+            fp = self._latest_report_file(period)
+            if fp is not None:
+                logger.info(f"[小鲸] 手动日报复用 {fp.name}")
         if fp is None:
             try:
                 keep_days, keep_max = self._report_keep_args()
@@ -7859,6 +7876,10 @@ class Main(star.Star):
                 music_ok = await self._send_report_music(umo, fp)
                 if not music_ok:
                     await self._owner_alert("日报配乐失败", f"{fp.name} 的配乐没发出去")
+            elif (event is not None and self.cfg.get("report_manual_music", True)
+                  and fp.name in getattr(self, "_report_song_cache", {})):
+                await self._send_report_music(umo, fp)
+                logger.info(f"[小鲸] 手动日报复用配乐 {fp.name}")
         return ok
 
     async def _pick_report_song(self, fp: Path, avoid: list[str] | None = None) -> dict:

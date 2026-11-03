@@ -121,6 +121,8 @@
   "report_music_kw": "晴天 周杰伦",
   "report_keep_days": 7,
   "report_keep_max": 20,
+  "report_manual_reuse": true,
+  "report_manual_music": true,
   "music_brand": "qq",
   "sticker_dir": "",
   "birthday": "2026-01-01",
