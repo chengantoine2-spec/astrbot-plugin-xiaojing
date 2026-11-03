@@ -162,7 +162,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.11"
+BUILD = "1.3.12"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -6240,7 +6240,8 @@ class Main(star.Star):
         return "", False
 
     DRAW_RE = re.compile(
-        r"(画|绘制|P|修|改).{0,6}(一张|张|一个|个|只|幅|图|图片|表情包|头像|壁纸)"
+        r"(画|绘制|(?<![A-Za-z])[Pp](?![A-Za-z])|修|改).{0,6}"
+        r"(一张|张|一个|个|只|幅|图|图片|表情包|头像|壁纸)"
         r"|(做|生成).{0,6}(图|图片|表情包|头像|壁纸|简笔画|像素画)"
         r"|画画|画图",
         re.I,
