@@ -84,7 +84,7 @@ git clone https://github.com/chengantoine2-spec/astrbot-plugin-xiaojing.git `
 
 目录名必须是 `astrbot_plugin_xiaojing`，AstrBot 才能正确识别插件。
 
-也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.16.zip`，解压成这个目录；或者直接复制本目录。
+也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.17.zip`，解压成这个目录；或者直接复制本目录。
 
 如果使用安装脚本：
 
@@ -321,6 +321,13 @@ Cookie 使用 Windows DPAPI 加密保存在 `data/netease.enc`，只能被当前
 
 `napcat_watchdog.py` 由 Windows 计划任务定时调用，检查 OneBot HTTP 与 WebSocket 状态；异常时写日志并弹桌面通知。
 
+默认行为：
+
+- **00:00–06:00 夜间静默**：不探测、不重启、不弹通知
+- **06:00–07:00 自动重启一次 NapCat**，随后交给正常探测
+- 账号自动从 `onebot11_*.json` 中识别，避免重启后变成扫码登录
+- 只结束 `NAPCAT_DIR` 下的 QQ 与引导进程，不会动个人 QQ
+
 先设置环境变量：
 
 ```powershell
@@ -339,7 +346,18 @@ schtasks /Create /F /SC MINUTE /MO 5 /TN "NapCat Watchdog" `
   /TR "\"<AstrBot>\backend\python\pythonw.exe\" \"<插件目录>\napcat_watchdog.py\"" /IT
 ```
 
-`NAPCAT_QUICK_PASSWORD` 留空时只通知、不自动登录。
+`NAPCAT_QUICK_PASSWORD` 留空时，若 QQ 没有保持登录，重启后可能需要在 NapCat 扫码。
+
+可用环境变量覆盖时间：
+
+```powershell
+[Environment]::SetEnvironmentVariable("NAPCAT_QUIET_START", "00:00", "User")
+[Environment]::SetEnvironmentVariable("NAPCAT_QUIET_END", "06:00", "User")
+[Environment]::SetEnvironmentVariable("NAPCAT_DAILY_RESTART", "06:00", "User")
+[Environment]::SetEnvironmentVariable("NAPCAT_DAILY_RESTART_ENABLED", "1", "User")
+```
+
+`NAPCAT_DAILY_RESTART_ENABLED=0` 可关闭每日重启，只保留掉线探测。
 
 ## 关机钩子
 
