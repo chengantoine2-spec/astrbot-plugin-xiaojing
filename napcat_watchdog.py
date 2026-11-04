@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """NapCat 看门狗：定时探测 OneBot HTTP 端口。
 
-- 00:00-06:00 夜间静默：不探测、不重启、不弹通知
+- 默认 24 小时探测；如设置 NAPCAT_QUIET_ENABLED=1，则在 00:00-06:00 不探测、不重启、不弹通知
 - 06:00-07:00 之间做一次当日重启，重启后由正常探测接管
 - 在线时只写日志，不打扰
 - 掉线时写日志 + 桌面通知
@@ -66,6 +66,9 @@ STATE = PLUGIN_DATA / "watchdog_state.json"
 
 QUIET_START = os.environ.get("NAPCAT_QUIET_START", "00:00")
 QUIET_END = os.environ.get("NAPCAT_QUIET_END", "06:00")
+QUIET_ENABLED = os.environ.get("NAPCAT_QUIET_ENABLED", "0").lower() not in (
+    "0", "false", "no", "off",
+)
 DAILY_RESTART = os.environ.get("NAPCAT_DAILY_RESTART", "06:00")
 DAILY_RESTART_ENABLED = os.environ.get("NAPCAT_DAILY_RESTART_ENABLED", "1").lower() not in (
     "0", "false", "no", "off",
@@ -328,8 +331,8 @@ def main() -> int:
     st = load_state()
     now = time.time()
 
-    # 夜间静默：不探测、不重启、不通知。每天只记一条。
-    if in_quiet(now):
+    # 夜间静默是可选功能，默认关闭；关闭后深夜掉线也会正常探测和拉起。
+    if QUIET_ENABLED and in_quiet(now):
         day = _day(now)
         if st.get("quiet_day") != day:
             st["quiet_day"] = day

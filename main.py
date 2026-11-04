@@ -162,7 +162,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.17"
+BUILD = "1.3.18"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -245,7 +245,7 @@ DEFAULTS = {
     "proactive_min_gap_minutes": 45,
     "proactive_quiet_start": "23:00",
     "proactive_quiet_end": "08:00",
-    "quiet_hours_enabled": True,
+    "quiet_hours_enabled": False,
     "quiet_hours_start": "00:00",
     "quiet_hours_end": "06:00",
     "voice_enabled": True,

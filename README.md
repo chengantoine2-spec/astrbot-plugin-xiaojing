@@ -84,7 +84,7 @@ git clone https://github.com/chengantoine2-spec/astrbot-plugin-xiaojing.git `
 
 目录名必须是 `astrbot_plugin_xiaojing`，AstrBot 才能正确识别插件。
 
-也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.17.zip`，解压成这个目录；或者直接复制本目录。
+也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.18.zip`，解压成这个目录；或者直接复制本目录。
 
 如果使用安装脚本：
 
@@ -187,7 +187,7 @@ AstrBot 侧选择 `aiocqhttp` 适配器并连接同一地址。
 | `report_groups` | 日报群号列表 |
 | `report_keep_days` | 日报图片保留天数，默认 7 |
 | `report_keep_max` | 日报图片最多保留数，默认 20 |
-| `quiet_hours_enabled` | 夜间静默开关，默认 `true`；静默期内不回复、不主动、不跑定时任务 |
+| `quiet_hours_enabled` | 夜间静默开关，默认 `false`；需要 00:00–06:00 静默时设为 `true` |
 | `quiet_hours_start` / `quiet_hours_end` | 静默时段，默认 `00:00`–`06:00`；支持跨零点，如 `23:00`–`07:00` |
 | `video_cache_max` | 视频缓存最多保留条数，默认 40 |
 | `onebot.base` | NapCat HTTP 地址，如 `http://127.0.0.1:3000` |
@@ -323,10 +323,11 @@ Cookie 使用 Windows DPAPI 加密保存在 `data/netease.enc`，只能被当前
 
 默认行为：
 
-- **00:00–06:00 夜间静默**：不探测、不重启、不弹通知
+- **24 小时探测**：深夜掉线也会自动重启 NapCat，并使用识别到的账号自动登录
 - **06:00–07:00 自动重启一次 NapCat**，随后交给正常探测
 - 账号自动从 `onebot11_*.json` 中识别，避免重启后变成扫码登录
 - 只结束 `NAPCAT_DIR` 下的 QQ 与引导进程，不会动个人 QQ
+- 如需夜间静默，设置 `NAPCAT_QUIET_ENABLED=1`（00:00–06:00 不探测、不重启、不通知）
 
 先设置环境变量：
 
@@ -348,9 +349,10 @@ schtasks /Create /F /SC MINUTE /MO 5 /TN "NapCat Watchdog" `
 
 `NAPCAT_QUICK_PASSWORD` 留空时，若 QQ 没有保持登录，重启后可能需要在 NapCat 扫码。
 
-可用环境变量覆盖时间：
+可用环境变量覆盖时间；夜间静默默认关闭：
 
 ```powershell
+[Environment]::SetEnvironmentVariable("NAPCAT_QUIET_ENABLED", "1", "User")
 [Environment]::SetEnvironmentVariable("NAPCAT_QUIET_START", "00:00", "User")
 [Environment]::SetEnvironmentVariable("NAPCAT_QUIET_END", "06:00", "User")
 [Environment]::SetEnvironmentVariable("NAPCAT_DAILY_RESTART", "06:00", "User")
