@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.19 - 2026-11-04
+
+- 降低 NapCat 重启后要求扫码的概率：默认关闭六点强制重启，只在掉线时拉起
+- 网络不可达时不再反复拉起 NapCat，等网络恢复后再处理
+- 启动 NapCat 时同时传入 `NAPCAT_QUICK_ACCOUNT`，并建议在 `webui.json` 的 `autoLoginAccount` 填入机器人 QQ
+- 保留账号自动识别，避免空账号触发二维码登录
+
 ## 1.3.18 - 2026-11-04
 
 - 夜间静默默认关闭，小鲸鱼 00:00–06:00 恢复响应；需要时设 `quiet_hours_enabled=true`

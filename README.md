@@ -84,7 +84,7 @@ git clone https://github.com/chengantoine2-spec/astrbot-plugin-xiaojing.git `
 
 目录名必须是 `astrbot_plugin_xiaojing`，AstrBot 才能正确识别插件。
 
-也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.18.zip`，解压成这个目录；或者直接复制本目录。
+也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.19.zip`，解压成这个目录；或者直接复制本目录。
 
 如果使用安装脚本：
 
@@ -324,8 +324,10 @@ Cookie 使用 Windows DPAPI 加密保存在 `data/netease.enc`，只能被当前
 默认行为：
 
 - **24 小时探测**：深夜掉线也会自动重启 NapCat，并使用识别到的账号自动登录
-- **06:00–07:00 自动重启一次 NapCat**，随后交给正常探测
-- 账号自动从 `onebot11_*.json` 中识别，避免重启后变成扫码登录
+- **默认不做每日强制重启**，只在检测到掉线时拉起，减少登录态消耗
+- 网络不可达时只记录，不反复拉起；等网络恢复后再处理
+- 账号自动从 `onebot11_*.json` 中识别，启动时同时传入 `NAPCAT_QUICK_ACCOUNT`
+- 建议在 NapCat `webui.json` 的 `autoLoginAccount` 填入机器人 QQ，增加一条快速登录路径
 - 只结束 `NAPCAT_DIR` 下的 QQ 与引导进程，不会动个人 QQ
 - 如需夜间静默，设置 `NAPCAT_QUIET_ENABLED=1`（00:00–06:00 不探测、不重启、不通知）
 
@@ -334,7 +336,7 @@ Cookie 使用 Windows DPAPI 加密保存在 `data/netease.enc`，只能被当前
 ```powershell
 [Environment]::SetEnvironmentVariable("NAPCAT_DIR", "C:\NapCat\NapCat.Shell", "User")
 [Environment]::SetEnvironmentVariable("NAPCAT_ACCOUNT", "你的机器人QQ", "User")
-[Environment]::SetEnvironmentVariable("NAPCAT_QUICK_PASSWORD", "快速登录密码（可留空）", "User")
+[Environment]::SetEnvironmentVariable("NAPCAT_QUICK_PASSWORD", "（留空则不使用密码回退）", "User")
 [Environment]::SetEnvironmentVariable("ASTRBOT_ROOT", "$env:USERPROFILE\.astrbot", "User")
 ```
 
@@ -347,19 +349,28 @@ schtasks /Create /F /SC MINUTE /MO 5 /TN "NapCat Watchdog" `
   /TR "\"<AstrBot>\backend\python\pythonw.exe\" \"<插件目录>\napcat_watchdog.py\"" /IT
 ```
 
-`NAPCAT_QUICK_PASSWORD` 留空时，若 QQ 没有保持登录，重启后可能需要在 NapCat 扫码。
-
-可用环境变量覆盖时间；夜间静默默认关闭：
+可用环境变量覆盖时间；夜间静默默认关闭，需要时把 `NAPCAT_QUIET_ENABLED` 设为 `1`：
 
 ```powershell
-[Environment]::SetEnvironmentVariable("NAPCAT_QUIET_ENABLED", "1", "User")
+[Environment]::SetEnvironmentVariable("NAPCAT_QUIET_ENABLED", "0", "User")
 [Environment]::SetEnvironmentVariable("NAPCAT_QUIET_START", "00:00", "User")
 [Environment]::SetEnvironmentVariable("NAPCAT_QUIET_END", "06:00", "User")
 [Environment]::SetEnvironmentVariable("NAPCAT_DAILY_RESTART", "06:00", "User")
-[Environment]::SetEnvironmentVariable("NAPCAT_DAILY_RESTART_ENABLED", "1", "User")
+[Environment]::SetEnvironmentVariable("NAPCAT_DAILY_RESTART_ENABLED", "0", "User")
 ```
 
-`NAPCAT_DAILY_RESTART_ENABLED=0` 可关闭每日重启，只保留掉线探测。
+需要每天六点强制刷新一次时，把 `NAPCAT_DAILY_RESTART_ENABLED` 设为 `1`；每次强制重启都会增加一次登录态风险。
+
+`NAPCAT_QUICK_PASSWORD` 是快速登录失败后的密码回退，不是免扫码保证：QQ 仍可能要求验证码或新设备验证，且密码/密钥会留在环境变量里，建议优先保持快速登录记录有效。
+
+### 减少扫码
+
+- 不要频繁重启 NapCat；默认已关闭每日强制重启
+- 不要清理 `C:\Users\<用户>\AppData\Roaming\QQ` 或 NapCat 配置，快速登录依赖本地登录记录
+- 不要频繁切换账号、Windows 用户或网络出口；IP 大幅变化可能触发 QQ 安全验证
+- 让机器人账号保持专用，避免手机/另一台电脑登录把当前会话挤掉
+- `autoLoginAccount` 填机器人 QQ；看门狗启动时也会传 `NAPCAT_QUICK_ACCOUNT`
+- 如接受凭据留在环境变量的风险，可配置 `NAPCAT_QUICK_PASSWORD_MD5` 作为密码回退；仍可能要求验证码
 
 ## 关机钩子
 

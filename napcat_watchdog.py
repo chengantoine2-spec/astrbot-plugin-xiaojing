@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -70,7 +71,8 @@ QUIET_ENABLED = os.environ.get("NAPCAT_QUIET_ENABLED", "0").lower() not in (
     "0", "false", "no", "off",
 )
 DAILY_RESTART = os.environ.get("NAPCAT_DAILY_RESTART", "06:00")
-DAILY_RESTART_ENABLED = os.environ.get("NAPCAT_DAILY_RESTART_ENABLED", "1").lower() not in (
+# 每天强制重启会额外消耗登录态，默认关闭；需要时设为 1。
+DAILY_RESTART_ENABLED = os.environ.get("NAPCAT_DAILY_RESTART_ENABLED", "0").lower() not in (
     "0", "false", "no", "off",
 )
 RESTART_GAP = 90 * 60
@@ -229,6 +231,15 @@ def qq_alive() -> bool:
         return False
 
 
+def internet_ok(timeout: float = 5) -> bool:
+    """外网是否可达；网络断开时不要反复拉起 NapCat，避免登录失败。"""
+    try:
+        with socket.create_connection(("www.qq.com", 443), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
 def notify(title: str, msg: str) -> None:
     ps = (
         "Add-Type -AssemblyName System.Windows.Forms;"
@@ -305,6 +316,7 @@ def restart_napcat() -> bool:
     stop_napcat()
     env = os.environ.copy()
     env["ACCOUNT"] = ACCOUNT
+    env["NAPCAT_QUICK_ACCOUNT"] = ACCOUNT
     if QUICK_PWD:
         env["NAPCAT_QUICK_PASSWORD"] = QUICK_PWD
     try:
@@ -347,6 +359,9 @@ def main() -> int:
             log("未识别 NapCat 账号，跳过定时重启（避免扫码登录）")
             st["daily_restart_day"] = day
             save_state(st)
+            return 1
+        if not internet_ok():
+            log("网络不可达，暂缓六点重启")
             return 1
         log(f"{DAILY_RESTART} 定时重启 NapCat（账号 {ACCOUNT}）")
         if not QUICK_PWD:
@@ -392,6 +407,10 @@ def main() -> int:
     st["last_fail"] = int(now)
 
     if not qr_new and not qq_alive():
+        if not internet_ok():
+            log("网络不可达，暂不拉起 NapCat")
+            save_state(st)
+            return 1
         last = int(st.get("last_restart") or 0)
         if now - last > RESTART_GAP:
             if restart_napcat():
