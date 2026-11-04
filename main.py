@@ -162,7 +162,7 @@ CHANGES_PATH = DATA_DIR / "self_changes.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
 IMAGE_FEEDBACK_PATH = DATA_DIR / "image_feedback.json"
 PROACTIVE_STATE_PATH = DATA_DIR / "proactive_state.json"
-BUILD = "1.3.15"
+BUILD = "1.3.16"
 CURRENT_UMO = contextvars.ContextVar("xiaojing_umo", default=None)
 MEM_DIR = DATA_DIR / "memory"
 SELF_MEM = MEM_DIR / "_self.md"
@@ -245,6 +245,9 @@ DEFAULTS = {
     "proactive_min_gap_minutes": 45,
     "proactive_quiet_start": "23:00",
     "proactive_quiet_end": "08:00",
+    "quiet_hours_enabled": True,
+    "quiet_hours_start": "00:00",
+    "quiet_hours_end": "06:00",
     "voice_enabled": True,
     "tts_provider": "sapi",
     "tts_sapi_voice": "Microsoft Huihui Desktop",
@@ -1059,6 +1062,8 @@ class Main(star.Star):
             try:
                 await asyncio.sleep(20 if first else 300)
                 first = False
+                if self._quiet_now():
+                    continue
                 if not self.cfg.get("world_daily_enabled", True):
                     continue
                 now_ts = time.time() + 8 * 3600
@@ -4244,6 +4249,8 @@ class Main(star.Star):
                 now_ts = time.time() + 8 * 3600
                 hm = time.strftime("%H:%M", time.gmtime(now_ts))
                 day = time.strftime("%Y-%m-%d", time.gmtime(now_ts))
+                if self._quiet_now():
+                    continue
                 st = self._load_ritual_state()
                 done = set(st.get(day) or [])
                 morning = str(conf.get("morning") or "08:30")
@@ -7375,6 +7382,9 @@ class Main(star.Star):
     async def on_group_message(self, event: AstrMessageEvent):
         """兜底：插件出错时交回主流程，绝不静默吞消息。"""
         try:
+            if self._quiet_check():
+                self._stop(event)
+                return
             if await self._buffer_turn(event, True):
                 return
             await self._group_impl(event)
@@ -7384,6 +7394,9 @@ class Main(star.Star):
 
     async def _group_impl(self, event: AstrMessageEvent):
         if not self.cfg.get("enabled", True):
+            return
+        if self._quiet_now():
+            self._stop(event)
             return
         text = self._plain_text(event)
         if not text and not any(c.__class__.__name__ == "At" for c in event.get_messages()):
@@ -8116,6 +8129,8 @@ class Main(star.Star):
                 await asyncio.sleep(30)
                 if not self.cfg.get("report_enabled", True):
                     continue
+                if self._quiet_now():
+                    continue
                 now_ts = time.time() + 8 * 3600
                 day = time.strftime("%Y-%m-%d", time.gmtime(now_ts))
                 secs = now_ts % 86400
@@ -8242,6 +8257,9 @@ class Main(star.Star):
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=5)
     async def on_private_message(self, event: AstrMessageEvent):
         try:
+            if self._quiet_check():
+                self._stop(event)
+                return
             if await self._buffer_turn(event, False):
                 return
             await self._private_impl(event)
@@ -8250,6 +8268,9 @@ class Main(star.Star):
 
     async def _private_impl(self, event: AstrMessageEvent):
         if not self.cfg.get("enabled", True):
+            return
+        if self._quiet_now():
+            self._stop(event)
             return
         text = self._plain_text(event)
         if not text and not any(c.__class__.__name__ == "At" for c in event.get_messages()):
@@ -8504,6 +8525,47 @@ class Main(star.Star):
         except Exception:
             pass
 
+    @staticmethod
+    def _clock_minutes(value, fallback: int) -> int:
+        try:
+            h, m = str(value).strip().split(":")
+            h, m = int(h), int(m)
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                return h * 60 + m
+        except Exception:
+            pass
+        return fallback
+
+    def _quiet_now(self, now: float | None = None) -> bool:
+        """夜间静默：这段时间不回复、不主动、不跑定时任务。"""
+        if not self.cfg.get("quiet_hours_enabled", True):
+            return False
+        now = time.time() if now is None else float(now)
+        hm = time.strftime("%H:%M", time.gmtime(now + 8 * 3600))
+        cur = self._clock_minutes(hm, -1)
+        start = self._clock_minutes(self.cfg.get("quiet_hours_start"), 0)
+        end = self._clock_minutes(self.cfg.get("quiet_hours_end"), 6 * 60)
+        if cur < 0 or start == end:
+            return False
+        if start < end:
+            return start <= cur < end
+        return cur >= start or cur < end
+
+    def _quiet_check(self) -> bool:
+        """带一次状态切换日志的静默检查，避免每条消息都刷屏。"""
+        quiet = self._quiet_now()
+        prev = bool(getattr(self, "_quiet_logged", False))
+        if quiet and not prev:
+            self._quiet_logged = True
+            logger.info(
+                f"[小鲸] 进入夜间静默（{self.cfg.get('quiet_hours_start', '00:00')}"
+                f"-{self.cfg.get('quiet_hours_end', '06:00')}），消息不响应"
+            )
+        elif not quiet and prev:
+            self._quiet_logged = False
+            logger.info("[小鲸] 夜间静默结束，恢复响应")
+        return quiet
+
     def _proactive_allowed(self, now: float | None = None) -> bool:
         now = time.time() if now is None else float(now)
         hm = time.strftime("%H:%M", time.gmtime(now + 8 * 3600))
@@ -8544,6 +8606,8 @@ class Main(star.Star):
             try:
                 await asyncio.sleep(120)
                 if not self.cfg.get("enabled", True) or not self._umo:
+                    continue
+                if self._quiet_now():
                     continue
                 idle = time.time() - (self._last_activity or time.time())
                 if idle < float(self.cfg.get("idle_minutes", 12)) * 60:

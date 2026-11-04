@@ -84,7 +84,7 @@ git clone https://github.com/chengantoine2-spec/astrbot-plugin-xiaojing.git `
 
 目录名必须是 `astrbot_plugin_xiaojing`，AstrBot 才能正确识别插件。
 
-也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.15.zip`，解压成这个目录；或者直接复制本目录。
+也可以直接下载 Release 里的 `astrbot_plugin_xiaojing-1.3.16.zip`，解压成这个目录；或者直接复制本目录。
 
 如果使用安装脚本：
 
@@ -187,6 +187,8 @@ AstrBot 侧选择 `aiocqhttp` 适配器并连接同一地址。
 | `report_groups` | 日报群号列表 |
 | `report_keep_days` | 日报图片保留天数，默认 7 |
 | `report_keep_max` | 日报图片最多保留数，默认 20 |
+| `quiet_hours_enabled` | 夜间静默开关，默认 `true`；静默期内不回复、不主动、不跑定时任务 |
+| `quiet_hours_start` / `quiet_hours_end` | 静默时段，默认 `00:00`–`06:00`；支持跨零点，如 `23:00`–`07:00` |
 | `video_cache_max` | 视频缓存最多保留条数，默认 40 |
 | `onebot.base` | NapCat HTTP 地址，如 `http://127.0.0.1:3000` |
 | `onebot.token` | NapCat access token |
